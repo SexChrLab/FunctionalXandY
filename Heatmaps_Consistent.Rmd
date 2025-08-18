@@ -1,0 +1,1387 @@
+---
+title: "Genes changing consistently between tissues"
+author: "Seema Plaisier"
+date: "`r format(Sys.time(), '%m/%d/%y')`"
+output:
+  pdf_document: default
+  html_document:
+    df_print: paged
+---
+
+```{r Printoptions}
+knitr::opts_chunk$set(tidy.opts = list(width.cutoff = 50), tidy = TRUE)
+```
+## Load packages
+
+Install the necessary packages for our analysis.  The function 'require' returns a true value if it is already installed, so if it is not, we need to install before loading
+
+```{r Packages, warning=FALSE}
+
+library(ComplexHeatmap)
+library(circlize)
+library(RColorBrewer)
+library(dplyr)
+library(tidyr)
+library(ggplot2)
+library(scales)
+library(colorspace)
+library(UpSetR)
+library(ComplexUpset)
+library(stringr)
+
+```
+
+# Set working directory
+
+Your working directory is where all your output files are going to be saved.
+
+``` {r WorkingDirectory, tidy=TRUE, tidy.opts=list(width.cutoff=60)}
+# you will need to change this to the directory you are working in
+# make sure to include the / at the end of the directory path
+working_directory = "C:/Users/splaisie/Dropbox (ASU)/BackupASU/GenomicsCURE/CCLE_Fall2023/TCGA_differentialExpression/"
+
+```
+
+# List of Sex Chr Genes
+
+To produce figures with the sex chromosome genes filtered out, let's grab those from the UCSC Table Browser results I downloaded.
+
+```{r SexChrGenes}
+table = read.csv("C:/Users/splaisie/ASU Dropbox/Seema Plaisier/BackupASU/UCSC_Table_Browser/Human_Gene_ID_to_name.csv")
+
+sex_chr_table = table[table$chr == "chrX" | table$chr == "chrY", ]
+X_chr_table = table[table$chr == "chrX", ]
+Y_chr_table = table[table$chr == "chrY", ]
+
+gene_to_chr = unique(table[colnames(table) %in% c("Gene.stable.ID.version","Gene.name","chr", "cdsStart","cdsEnd") ])
+
+chr_order = c("chrX","chrY","chr1","chr2","chr3","chr4","chr5","chr6","chr7","chr8","chr9","chr10","chr11","chr12","chr13","chr14","chr15","chr16","chr17","chr18","chr19","chr20","chr21","chr22","chr23")
+
+gene_to_chr = na.omit(gene_to_chr[gene_to_chr$chr %in% chr_order,])
+
+chr_lengths = read.csv("C:/Users/splaisie/ASU Dropbox/Seema Plaisier/BackupASU/UCSC_Table_Browser/chr_lengths.csv")
+```
+
+```{r KinaseGenes}
+
+kinase_data = read.csv("C:/Users/splaisie/ASU Dropbox/Seema Plaisier/BackupASU/GenomicsCURE/CCLE_Fall2023/TCGA_differentialExpression/KinaseList.csv")
+
+kinase_symbols = na.omit(kinase_data$Name)
+
+```
+
+
+```{r TranscriptionFactors}
+
+TF_data = read.csv("C:/Users/splaisie/ASU Dropbox/Seema Plaisier/BackupASU/GenomicsCURE/CCLE_Fall2023/TCGA_differentialExpression/DatabaseExtract_v_1.01.csv")
+
+TF_IDs = na.omit(TF_data$Ensembl.ID)
+TF_symbols = na.omit(TF_data$HGNC.symbol)
+
+```
+
+
+```{r Surfaceome}
+
+surface_data = read.csv("C:/Users/splaisie/ASU Dropbox/Seema Plaisier/BackupASU/GenomicsCURE/CCLE_Fall2023/TCGA_differentialExpression/surfaceome.csv")
+
+surfaceome_symbols = na.omit(surface_data$Gene.name)
+
+```
+
+# Heatmap
+
+
+```{r Heatmap, tidy=TRUE, tidy.opts=list(width.cutoff=60)}
+
+# Differential gene expression results data file that contains logFC and p-value values
+
+#de_data = read.csv(paste0(working_directory,"TCGA_XCI_dge_ALLtissues_AgeCovariate.csv"), check.names = FALSE)
+#de_data = read.csv(paste0(working_directory,"TCGA_LOX_dge_ALLtissues_vsexpected_AgeCovariate.csv"), check.names = FALSE)
+#de_data = read.csv(paste0(working_directory,"TCGA_LOY_dge_ALLtissues_AgeCovariate.csv"), check.names = FALSE)
+de_data = read.csv(paste0(working_directory,"TCGA_SEXTYP_dge_ALLtissues_vsexpected_AgeCovariate.csv"), check.names = FALSE)
+
+lfc_df = de_data[, grep("logFC",colnames(de_data))]
+rownames(lfc_df) = de_data$genes
+pval_df = de_data[, grep("P.Value",colnames(de_data))]
+rownames(pval_df) = de_data$genes
+adjpval_df = de_data[, grep("adj",colnames(de_data))]
+rownames(adjpval_df) = de_data$genes
+
+# Convert to matrices and ensure same row order
+lfc_matrix <- as.matrix(lfc_df)
+pval_matrix <- as.matrix(pval_df)
+adjpval_matrix <- as.matrix(adjpval_df)
+
+# Filter those for which genes we want to show
+
+# Create logical matrix for significance (TRUE if p < 0.05)
+sig_matrix <- pval_matrix < 0.05
+
+# Calculate proportion of significant p-values per gene (row)
+sig_proportion <- rowSums(sig_matrix) / ncol(lfc_df)
+
+# Filter genes where at least 60% of p-values are significant
+genes_to_keep <- sig_proportion >= 0.6
+sum(genes_to_keep)
+geneIDs_to_keep_list = names(genes_to_keep)[genes_to_keep]
+
+# Subset both matrices
+filtered_lfc_df <- lfc_matrix[genes_to_keep, ]
+
+# Filter out genes not all in the same direction
+filtered_lfc_df <- filtered_lfc_df[apply(filtered_lfc_df, 1, function(row) all(row > 0) || all(row < 0)), ]
+
+filtered_pval_df <- pval_matrix[rownames(filtered_lfc_df), ]
+filtered_adjpval_df <- adjpval_matrix[rownames(filtered_lfc_df), ]
+
+# Convert to matrices and ensure same row order
+lfc_matrix <- as.matrix(filtered_lfc_df)
+pval_matrix <- as.matrix(filtered_pval_df)
+adjpval_matrix <- as.matrix(filtered_adjpval_df)
+
+# Shorten colnames
+tissue_types = colnames(lfc_matrix)
+tissue_types = gsub("TCGA-","",tissue_types)
+tissue_types = gsub("_logFC","",tissue_types)
+colnames(lfc_matrix) = tissue_types
+
+tissue_types = colnames(pval_matrix)
+tissue_types = gsub("TCGA-","",tissue_types)
+tissue_types = gsub("_P.Value","",tissue_types)
+colnames(pval_matrix) = tissue_types
+
+tissue_types = colnames(adjpval_matrix)
+tissue_types = gsub("TCGA-","",tissue_types)
+tissue_types = gsub("_adj.P.Val","",tissue_types)
+colnames(adjpval_matrix) = tissue_types
+
+# Order log foldchange by absolute value
+ordered_cols <- order(colMeans(abs(lfc_matrix)), decreasing = TRUE)
+lfc_matrix <- lfc_matrix[, ordered_cols]
+
+# Reorder pvalue matrices to be in the same order
+pval_matrix <- pval_matrix[, colnames(lfc_matrix)]
+adjpval_matrix <- adjpval_matrix[, colnames(lfc_matrix)]
+
+# Create text matrix: "*" where significant, "" elsewhere
+sig_matrix <- pval_matrix < 0.05
+adjsig_matrix <- adjpval_matrix < 0.05
+text_mat <- ifelse(sig_matrix, "*", "")
+text_mat2 <- ifelse(adjsig_matrix, "**", "")
+merged_text_mat <- ifelse(text_mat2 == "**", "**", ifelse(text_mat == "*", "*", ""))
+
+# Set row names to be the gene names
+gene_ids = rownames(lfc_matrix)
+gene_symbols = de_data$symbol[match(gene_ids, de_data$genes)]
+gene_symbols[is.na(gene_symbols)] = gene_ids[is.na(gene_symbols)]  # fallback to gene ID
+#rownames(lfc_matrix) = gene_symbols
+
+#write.csv(lfc_matrix, file = paste0(working_directory,"ConsistentGenes_XCI.csv"))
+#write.csv(lfc_matrix, file = paste0(working_directory,"ConsistentGenes_LOX.csv"))
+#write.csv(lfc_matrix, file = paste0(working_directory,"ConsistentGenes_LOY.csv"))
+write.csv(lfc_matrix, file = paste0(working_directory,"ConsistentGenes_SEXTYP.csv"))
+
+# write genes out for metascape if needed
+# write.csv(rownames(lfc_matrix), file = paste0(working_directory,"genes_for_metascape.csv"))
+
+# Define row annotations
+#metascape_annotation = read.csv(paste0(working_directory,"Metascape_XCI_sig60_AgeCovar/metascape_result.csv"))
+#metascape_annotation = read.csv(paste0(working_directory,"Metascape_LOX_sig60_AgeCovar/metascape_result.csv"))
+#metascape_annotation = read.csv(paste0(working_directory,"Metascape_LOY_sig60_AgeCovar/metascape_result.csv"))
+metascape_annotation = read.csv(paste0(working_directory,"Metascape_SEXTYP_sig60_AgeCovar/metascape_result.csv"))
+
+metascape_annotation$Canonical.Pathways. = str_to_title(metascape_annotation$Canonical.Pathways.)
+
+metascape_annotation$Hallmark.Gene.Sets. = str_to_title(metascape_annotation$Hallmark.Gene.Sets.)
+
+#colnames(metascape_annotation) = gsub("Canonical.Pathways","Canonical.Pathways.", colnames(metascape_annotation)) # added because I added this column for LOX
+
+cancer_matches = grepl("cancer|tumor", metascape_annotation$Disease...Drugs..ChatGPT., ignore.case = TRUE) | grepl("cancer|tumor", metascape_annotation$Protein.Functions..ChatGPT., ignore.case = TRUE)
+cancer_genes = metascape_annotation$MyList[cancer_matches]
+
+has_drugs <- metascape_annotation$Drug..DrugBank. != "None" & metascape_annotation$Drug..DrugBank. != ""
+drug_genes = metascape_annotation$MyList[has_drugs]
+
+# Assuming your column is named 'Hallmark.Gene.Sets' in the data frame 'metascape_annotation'
+all_hallmarks <- metascape_annotation %>%
+  separate_rows("Hallmark.Gene.Sets.", sep = ";") %>%   # split rows on semicolon
+  mutate(Pathway = trimws(Hallmark.Gene.Sets.)) %>%   # trim whitespace
+  #distinct(Hallmark.Gene.Sets.) %>%                   # get unique pathways
+  pull(Hallmark.Gene.Sets.)                           # extract as a vector
+
+# Get and clean list of Hallmarks
+all_hallmarks_list = list(all_hallmarks)
+all_hallmarks_list = lapply(all_hallmarks_list, function(x) gsub(" \\(", "(", x))
+all_hallmarks_list = lapply(all_hallmarks_list, function(x) sub("^\\s", "", x))
+all_hallmarks_list = unlist(all_hallmarks_list)
+all_hallmarks_list = unlist(all_hallmarks_list)
+all_hallmarks_list = all_hallmarks_list[all_hallmarks_list != ""]
+all_hallmarks_list = all_hallmarks_list[all_hallmarks_list != "None"]
+all_hallmarks_list = all_hallmarks_list[all_hallmarks_list != "NA"]
+all_hallmarks_list = c(all_hallmarks_list,"none")
+
+table_hallmarks = data.frame(table(all_hallmarks_list))
+table_hallmarks = table_hallmarks[order(-table_hallmarks$Freq), ]
+all_hallmarks_list = table_hallmarks$all_hallmarks_list
+
+# Repeat process to get 'Canonical Pathways' column in the data frame 'metascape_annotation'
+if ("Canonical.Pathways." %in% colnames(metascape_annotation)) {
+  all_pathways <- metascape_annotation %>%
+    separate_rows("Canonical.Pathways.", sep = ";") %>%   # split rows on semicolon
+    mutate(Pathway = trimws(Canonical.Pathways.)) %>%   # trim whitespace
+#    distinct(Canonical.Pathways.) %>%                   # get unique pathways
+    pull(Canonical.Pathways.)                           # extract as a vector
+  
+  # Get and clean list of pathways
+  all_pathways_list = list(all_pathways)
+  all_pathways_list = lapply(all_pathways_list, function(x) gsub(" \\(", "(", x))
+  all_pathways_list = lapply(all_pathways_list, function(x) sub("^\\s", "", x))
+  all_pathways_list = unlist(all_pathways_list)
+  all_pathways_list = all_pathways_list[all_pathways_list != ""]
+  all_pathways_list = all_pathways_list[all_pathways_list != "None"]
+  all_pathways_list = all_pathways_list[all_pathways_list != "NA"]
+  all_pathways_list = c(all_pathways_list,"none")
+} else {
+  all_pathways_list = c("none")
+}
+
+table_pathways = data.frame(table(all_pathways_list))
+table_pathways = table_pathways[order(-table_pathways$Freq), ]
+all_pathways_list = table_pathways$all_pathways_list
+
+# set row annotation bar
+genes <- rownames(lfc_matrix)
+genes_base = sub("\\..*$","", genes)
+is_cancer <- genes %in% cancer_genes
+has_drug <- genes %in% drug_genes
+
+hallmarks = rep("none", length(genes))
+for (i in 1:length(genes)) {
+  results = metascape_annotation$Hallmark.Gene.Sets.[metascape_annotation$MyList == genes[i]]
+  for (hallmark in all_hallmarks_list) {
+    if (grepl(hallmark,results, fixed = TRUE) | hallmark == results) {
+      hallmarks[i] = hallmark
+    }
+  }
+}
+
+pathways = rep("none", length(genes))
+if ("Canonical.Pathways." %in% colnames(metascape_annotation)) {
+  for (i in 1:length(genes)) {
+    results = metascape_annotation$Canonical.Pathways.[metascape_annotation$MyList == genes[i]]
+    for (pathway in all_pathways_list) {
+      if (grepl(pathway,results, fixed = TRUE) | pathway == results) {
+        pathways[i] = pathway
+        #print(pathway)
+      }
+    }
+  }
+}
+
+# ---- color method 1: 2 sets of colors -----
+hallmark_colors <- qualitative_hcl(length(all_hallmarks_list), palette = "Dark 3")
+names(hallmark_colors) <- all_hallmarks_list
+hallmark_colors["none"] = "white"
+
+pathway_colors <- qualitative_hcl(length(all_pathways_list), palette = "Set 3")
+names(pathway_colors) <- all_pathways_list
+pathway_colors["none"] = "white"
+
+# ---- color method 2: rainbow -----
+# hallmark_colors <- rainbow(length(all_hallmarks_list))
+# names(hallmark_colors) <- all_hallmarks_list
+# hallmark_colors["none"] = "white"
+# 
+# pathway_colors <- rainbow(length(all_pathways_list))
+# names(pathway_colors) <- all_pathways_list
+# pathway_colors["none"] = "white"
+
+# ---- color method 3: different purples and greens-----
+# hcl_palettes(type = "sequential")
+# color_purples = sequential_hcl(50, palette = "Purples 3")
+# 
+# hallmark_colors = sample(color_purples, length(all_hallmarks_list))
+# names(hallmark_colors) <- all_hallmarks_list
+# hallmark_colors["none"] = "white"
+# 
+# color_greens = sequential_hcl(50, palette = "Greens 3")
+# pathway_colors = sample(color_greens, length(all_pathways_list))
+# names(pathway_colors) <- all_pathways_list
+# pathway_colors["none"] = "white"
+
+#is_kinase <- genes %in% kinase_genes
+kinase_metascape = metascape_annotation$MyList[metascape_annotation$Kinase.Class..UniProt. == "yes"]
+
+functions = rep("none", length(genes))
+for (i in 1:length(genes)) {
+  if (gene_symbols[i] %in% surfaceome_symbols) {
+    functions[i] = "Surface_Gene"
+  }
+  if (genes_base[i] %in% TF_IDs) {
+    functions[i] = "Transcription_Factor"
+  }
+  if (gene_symbols[i] %in% kinase_symbols) {
+    functions[i] = "Kinase"
+  }
+  if (genes[i] %in% kinase_metascape) {
+    functions[i] = "Kinase"
+  }
+  
+}
+
+is_sexchrgene = genes_base %in% sex_chr_table$Gene.stable.ID
+is_chrXgene = genes_base %in% X_chr_table$Gene.stable.ID
+is_chrYgene = genes_base %in% Y_chr_table$Gene.stable.ID
+sex_chr_merge = rep("autosomal", length(is_chrXgene))
+sex_chr_merge[is_chrXgene] = "chrX"
+sex_chr_merge[is_chrYgene] = "chrY"
+  
+row_anno <- rowAnnotation(
+  Sex_Chr_Gene = sex_chr_merge,
+  Cancer = is_cancer,
+  DrugBank = has_drug,
+  Function = functions,
+  Hallmark = hallmarks,
+  Pathway = pathways,
+  col = list(
+    Cancer = c("TRUE" = "yellow", "FALSE" = "white"),
+    Function = c("Surface_Gene" = "#4daf4a", "Transcription_Factor" = "#377eb8", "Kinase" = "#e41a1c", "none" = "white"),
+    DrugBank = c("TRUE" = "blue", "FALSE" = "white"),
+    Hallmark = hallmark_colors,
+    Pathway = pathway_colors,
+    Sex_Chr_Gene = c("chrX" = "maroon", "chrY" = "green", "autosomal" = "lightgrey")
+  ),
+  show_annotation_name = TRUE,
+  border = TRUE
+)
+
+#pdf(paste0(working_directory,"TCGA_XCI_dge_ALLtissues.sigheatmap_AgeCovar_adjp.pdf"), width = 16, height = 12)  # adjust size as needed
+#pdf(paste0(working_directory,"TCGA_LOX_dge_ALLtissues_vsexpected.sigheatmap_AgeCovar_adjp.pdf"), width = 12, height = 8)  
+#pdf(paste0(working_directory,"TCGA_chrY_dge_ALLtissues.sigheatmap_AgeCovar_adjp.pdf"), width = 15, height = 13)  
+pdf(paste0(working_directory,"TCGA_SEXTYP_dge_ALLtissues.sigheatmap_AgeCovar_adjp.pdf"), width = 15, height = 13)
+
+# Draw heatmap
+Heatmap(
+  lfc_matrix,
+  name = "LogFC",
+  col = colorRamp2(c(-5, -2, 0, 2, 5), c("darkblue" , "blue", "white", "red", "maroon")),
+  #cell_fun = function(j, i, x, y, width, height, fill) {
+  #  grid.text(merged_text_mat[i, j], x, y, gp = gpar(fontsize = 3))
+  #},
+  cluster_rows = TRUE,
+  cluster_columns = TRUE,
+  right_annotation = row_anno,
+  show_row_names = FALSE,
+  row_labels = gene_symbols,
+  row_names_gp = gpar(fontsize = 5),
+  show_column_names = TRUE,
+  #clustering_distance_columns = "euclidean",
+  clustering_distance_rows = "euclidean"
+)
+
+dev.off()
+
+```
+
+# Get all lists of consistent direction genes 
+
+Same direction, pval < 0.05 in at least 60% of tissues and make an upset plot
+
+```{r cons_gene_lists}
+
+# ------------------------- XCI -------------------------
+
+#de_data = read.csv(paste0(working_directory,"TCGA_XCI_dge_ALLtissues.csv"), check.names = FALSE)
+de_data = read.csv(paste0(working_directory,"TCGA_XCI_dge_ALLtissues_AgeCovariate.csv"), check.names = FALSE)
+
+lfc_df = de_data[, grep("logFC",colnames(de_data))]
+rownames(lfc_df) = de_data$genes
+pval_df = de_data[, grep("P.Value",colnames(de_data))]
+rownames(pval_df) = de_data$genes
+
+lfc_matrix <- as.matrix(lfc_df)
+pval_matrix <- as.matrix(pval_df)
+sig_matrix <- pval_matrix < 0.05
+sig_proportion <- rowSums(sig_matrix) / ncol(lfc_df)
+
+genes_to_keep <- sig_proportion >= 0.6
+filtered_lfc_df <- lfc_matrix[genes_to_keep, ]
+filtered_lfc_df <- filtered_lfc_df[apply(filtered_lfc_df, 1, function(row) {
+  all(row > 0) || all(row < 0)
+}), ]
+filtered_lfc_means = rowMeans(filtered_lfc_df)
+write.csv(filtered_lfc_df, file = paste0(working_directory,"XCI_geneIDs_all_df.csv"))
+
+XCI_geneIDs_to_keep_list = rownames(filtered_lfc_df)
+XCI_geneIDs_up_list = rownames(filtered_lfc_df)[filtered_lfc_means > 0]
+XCI_geneIDs_down_list = rownames(filtered_lfc_df)[filtered_lfc_means <= 0]
+
+XCI_geneIDs_up_fc = na.omit(filtered_lfc_means[filtered_lfc_means > 0])
+XCI_geneIDs_down_fc = na.omit(filtered_lfc_means[filtered_lfc_means <= 0])
+XCI_geneIDs_up_df = data.frame(cbind("Gene.stable.ID.version" = XCI_geneIDs_up_list, "fc" = XCI_geneIDs_up_fc))
+XCI_geneIDs_down_df = data.frame(cbind("Gene.stable.ID.version" = XCI_geneIDs_down_list, "fc" = XCI_geneIDs_down_fc))
+XCI_geneIDs_up_df = merge(XCI_geneIDs_up_df, gene_to_chr, by = "Gene.stable.ID.version")
+XCI_geneIDs_up_df$dir = "up"
+XCI_geneIDs_down_df = merge(XCI_geneIDs_down_df, gene_to_chr, by = "Gene.stable.ID.version")
+XCI_geneIDs_down_df$dir = "down"
+XCI_geneIDs_all_df = unique(rbind(XCI_geneIDs_up_df,XCI_geneIDs_down_df) )
+XCI_geneIDs_all_df <- XCI_geneIDs_all_df[!duplicated(XCI_geneIDs_all_df$Gene.stable.ID.version), ]
+
+# ------------------------- LOX -------------------------
+
+#de_data = read.csv(paste0(working_directory,"TCGA_LOX_dge_ALLtissues_vsexpected.csv"), check.names = FALSE)
+de_data = read.csv(paste0(working_directory,"TCGA_LOX_dge_ALLtissues_vsexpected_AgeCovariate.csv"), check.names = FALSE)
+
+lfc_df = de_data[, grep("logFC",colnames(de_data))]
+rownames(lfc_df) = de_data$genes
+pval_df = de_data[, grep("P.Value",colnames(de_data))]
+rownames(pval_df) = de_data$genes
+
+lfc_matrix <- as.matrix(lfc_df)
+pval_matrix <- as.matrix(pval_df)
+sig_matrix <- pval_matrix < 0.05
+sig_proportion <- rowSums(sig_matrix) / ncol(lfc_df)
+
+genes_to_keep <- sig_proportion >= 0.6
+filtered_lfc_df <- lfc_matrix[genes_to_keep, ]
+filtered_lfc_df <- filtered_lfc_df[apply(filtered_lfc_df, 1, function(row) {
+  all(row > 0) || all(row < 0)
+}), ]
+filtered_lfc_means = rowMeans(filtered_lfc_df)
+
+LOX_geneIDs_to_keep_list = rownames(filtered_lfc_df)
+LOX_geneIDs_up_list = rownames(filtered_lfc_df)[filtered_lfc_means > 0]
+LOX_geneIDs_down_list = rownames(filtered_lfc_df)[filtered_lfc_means <=0]
+
+LOX_geneIDs_up_fc = na.omit(filtered_lfc_means[filtered_lfc_means > 0])
+LOX_geneIDs_down_fc = na.omit(filtered_lfc_means[filtered_lfc_means <= 0])
+LOX_geneIDs_up_df = data.frame(cbind("Gene.stable.ID.version" = LOX_geneIDs_up_list, "fc" = LOX_geneIDs_up_fc))
+LOX_geneIDs_down_df = data.frame(cbind("Gene.stable.ID.version" = LOX_geneIDs_down_list, "fc" = LOX_geneIDs_down_fc))
+LOX_geneIDs_up_df = merge(LOX_geneIDs_up_df, gene_to_chr, by = "Gene.stable.ID.version")
+LOX_geneIDs_up_df$dir = "up"
+LOX_geneIDs_down_df = merge(LOX_geneIDs_down_df, gene_to_chr, by = "Gene.stable.ID.version")
+LOX_geneIDs_down_df$dir = "down"
+
+LOX_geneIDs_all_df = unique(rbind(LOX_geneIDs_up_df,LOX_geneIDs_down_df) )
+LOX_geneIDs_all_df = LOX_geneIDs_all_df[!duplicated(LOX_geneIDs_all_df$Gene.stable.ID.version), ]
+
+# ------------------------- LOY -------------------------
+
+#de_data = read.csv(paste0(working_directory,"DDX3Yloss_dge_ALLtissues.csv"), check.names = FALSE)
+de_data = read.csv(paste0(working_directory,"TCGA_LOY_dge_ALLtissues_AgeCovariate.csv"), check.names = FALSE)
+
+lfc_df = de_data[, grep("logFC",colnames(de_data))]
+rownames(lfc_df) = de_data$genes
+pval_df = de_data[, grep("P.Value",colnames(de_data))]
+rownames(pval_df) = de_data$genes
+
+lfc_matrix <- as.matrix(lfc_df)
+pval_matrix <- as.matrix(pval_df)
+sig_matrix <- pval_matrix < 0.05
+sig_proportion <- rowSums(sig_matrix) / ncol(lfc_df)
+
+genes_to_keep <- sig_proportion >= 0.6
+filtered_lfc_df <- lfc_matrix[genes_to_keep, ]
+filtered_lfc_df <- filtered_lfc_df[apply(filtered_lfc_df, 1, function(row) {
+  all(row > 0) || all(row < 0)
+}), ]
+filtered_lfc_means = rowMeans(filtered_lfc_df)
+
+LOY_geneIDs_to_keep_list = rownames(filtered_lfc_df)
+LOY_geneIDs_up_list = rownames(filtered_lfc_df)[filtered_lfc_means > 0]
+LOY_geneIDs_down_list = rownames(filtered_lfc_df)[filtered_lfc_means <= 0]
+
+LOY_geneIDs_up_fc = na.omit(filtered_lfc_means[filtered_lfc_means > 0])
+LOY_geneIDs_down_fc = na.omit(filtered_lfc_means[filtered_lfc_means <= 0])
+LOY_geneIDs_up_df = data.frame(cbind("Gene.stable.ID.version" = LOY_geneIDs_up_list, "fc" = LOY_geneIDs_up_fc))
+LOY_geneIDs_down_df = data.frame(cbind("Gene.stable.ID.version" = LOY_geneIDs_down_list, "fc" = LOY_geneIDs_down_fc))
+LOY_geneIDs_up_df = merge(LOY_geneIDs_up_df, gene_to_chr, by = "Gene.stable.ID.version")
+LOY_geneIDs_up_df$dir = "up"
+LOY_geneIDs_down_df = merge(LOY_geneIDs_down_df, gene_to_chr, by = "Gene.stable.ID.version")
+LOY_geneIDs_down_df$dir = "down"
+
+LOY_geneIDs_all_df = unique(rbind(LOY_geneIDs_up_df,LOY_geneIDs_down_df) )
+LOY_geneIDs_all_df = LOY_geneIDs_all_df[!duplicated(LOY_geneIDs_all_df$Gene.stable.ID.version), ]
+
+# # upset
+# input_lists <- list(
+#   XCI_up = XCI_geneIDs_up_list,
+#   XCI_down = XCI_geneIDs_down_list,
+#   LOX_up = LOX_geneIDs_up_list,
+#   LOX_down = LOX_geneIDs_down_list,
+#   LOY_up = LOY_geneIDs_up_list,
+#   LOY_down = LOY_geneIDs_down_list
+# )
+# 
+# # Convert to binary presence/absence matrix
+# input_data <- fromList(input_lists)
+# 
+# # Upset plot
+# pdf(paste0(working_directory,"upset_sig60_XCI_LOX_LOY_AgeCovar.pdf"), width = 6, height = 4)  
+# UpSetR::upset(input_data, nsets = 6, sets = c("LOY_down", "LOX_down", "XCI_down", "LOY_up", "LOX_up",  "XCI_up"), keep.order = T, nintersects = NA)
+# dev.off()
+# 
+# # save intersect lists
+# intersection_up_LOX_XCI = Reduce(intersect,list(LOX_geneIDs_up_list,XCI_geneIDs_up_list))
+# symbol_lookup <- merge(data.frame(genes = intersection_up_LOX_XCI), de_data, by = "genes", all.x = TRUE)
+# symbol_lookup = symbol_lookup[, colnames(symbol_lookup) %in% c("genes","symbol")]
+# write.csv(symbol_lookup, file = "intersection_up_LOX_XCI_genes.csv", row.names = FALSE)
+# 
+# intersection_down_LOX_XCI = Reduce(intersect,list(LOX_geneIDs_down_list,XCI_geneIDs_down_list))
+# symbol_lookup <- merge(data.frame(genes = intersection_down_LOX_XCI), de_data, by = "genes", all.x = TRUE)
+# symbol_lookup = symbol_lookup[, colnames(symbol_lookup) %in% c("genes","symbol")]
+# write.csv(symbol_lookup, file = "intersection_down_LOX_XCI_genes.csv", row.names = FALSE)
+# 
+# intersection_up_LOX_LOY = Reduce(intersect,list(LOX_geneIDs_up_list,LOY_geneIDs_up_list))
+# symbol_lookup <- merge(data.frame(genes = intersection_up_LOX_LOY), de_data, by = "genes", all.x = TRUE)
+# symbol_lookup = symbol_lookup[, colnames(symbol_lookup) %in% c("genes","symbol")]
+# write.csv(symbol_lookup, file = "intersection_up_LOX_LOY_genes.csv", row.names = FALSE)
+# 
+# intersection_down_LOX_LOY = Reduce(intersect,list(LOX_geneIDs_down_list,LOY_geneIDs_down_list))
+# symbol_lookup <- merge(data.frame(genes = intersection_down_LOX_LOY), de_data, by = "genes", all.x = TRUE)
+# symbol_lookup = symbol_lookup[, colnames(symbol_lookup) %in% c("genes","symbol")]
+# write.csv(symbol_lookup, file = "intersection_down_LOX_LOY_genes.csv", row.names = FALSE)
+
+# ------------------------- SEXTYP -------------------------
+
+de_data = read.csv(paste0(working_directory,"TCGA_SEXTYP_dge_ALLtissues_vsexpected_AgeCovariate.csv"), check.names = FALSE)
+
+lfc_df = de_data[, grep("logFC",colnames(de_data))]
+rownames(lfc_df) = de_data$genes
+pval_df = de_data[, grep("P.Value",colnames(de_data))]
+rownames(pval_df) = de_data$genes
+
+lfc_matrix <- as.matrix(lfc_df)
+pval_matrix <- as.matrix(pval_df)
+sig_matrix <- pval_matrix < 0.05
+sig_proportion <- rowSums(sig_matrix) / ncol(lfc_df)
+
+genes_to_keep <- sig_proportion >= 0.6
+filtered_lfc_df <- lfc_matrix[genes_to_keep, ]
+filtered_lfc_df <- filtered_lfc_df[apply(filtered_lfc_df, 1, function(row) {
+  all(row > 0) || all(row < 0)
+}), ]
+filtered_lfc_means = rowMeans(filtered_lfc_df)
+
+SEXTYP_geneIDs_to_keep_list = rownames(filtered_lfc_df)
+SEXTYP_geneIDs_up_list = rownames(filtered_lfc_df)[filtered_lfc_means > 0]
+SEXTYP_geneIDs_down_list = rownames(filtered_lfc_df)[filtered_lfc_means <= 0]
+
+SEXTYP_geneIDs_up_fc = na.omit(filtered_lfc_means[filtered_lfc_means > 0])
+SEXTYP_geneIDs_down_fc = na.omit(filtered_lfc_means[filtered_lfc_means <= 0])
+SEXTYP_geneIDs_up_df = data.frame(cbind("Gene.stable.ID.version" = SEXTYP_geneIDs_up_list, "fc" = SEXTYP_geneIDs_up_fc))
+SEXTYP_geneIDs_down_df = data.frame(cbind("Gene.stable.ID.version" = SEXTYP_geneIDs_down_list, "fc" = SEXTYP_geneIDs_down_fc))
+SEXTYP_geneIDs_up_df = merge(SEXTYP_geneIDs_up_df, gene_to_chr, by = "Gene.stable.ID.version")
+SEXTYP_geneIDs_up_df$dir = "up"
+SEXTYP_geneIDs_down_df = merge(SEXTYP_geneIDs_down_df, gene_to_chr, by = "Gene.stable.ID.version")
+SEXTYP_geneIDs_down_df$dir = "down"
+
+SEXTYP_geneIDs_all_df = unique(rbind(SEXTYP_geneIDs_up_df,SEXTYP_geneIDs_down_df))
+SEXTYP_geneIDs_all_df = SEXTYP_geneIDs_all_df[!duplicated(SEXTYP_geneIDs_all_df$Gene.stable.ID.version), ]
+
+```
+
+# Upset plot with just the LIHC
+
+Similar format as the consistent gene upset, but with just LIHC
+
+```{r lihc_upset}
+
+# ------------------------- XCI -------------------------
+
+#de_data = read.csv(paste0(working_directory,"TCGA_XCI_dge_ALLtissues.csv"), check.names = FALSE)
+de_data = read.csv(paste0(working_directory,"TCGA_XCI_dge_ALLtissues_AgeCovariate.csv"), check.names = FALSE)
+
+LIHC_df = de_data[, grep("LIHC",colnames(de_data))]
+rownames(LIHC_df) = de_data$genes
+
+#XCI_geneIDs_up_list
+#XCI_geneIDs_down_list
+  
+
+# ------------------------- LOX -------------------------
+
+#de_data = read.csv(paste0(working_directory,"TCGA_LOX_dge_ALLtissues_vsexpected.csv"), check.names = FALSE)
+de_data = read.csv(paste0(working_directory,"TCGA_LOX_dge_ALLtissues_vsexpected_AgeCovariate.csv"), check.names = FALSE)
+
+LIHC_df = de_data[, grep("LIHC",colnames(de_data))]
+rownames(LIHC_df) = de_data$genes
+
+# LOX_geneIDs_up_list,
+# LOX_geneIDs_down_list,
+
+
+# ------------------------- LOY -------------------------
+
+#de_data = read.csv(paste0(working_directory,"DDX3Yloss_dge_ALLtissues.csv"), check.names = FALSE)
+de_data = read.csv(paste0(working_directory,"TCGA_LOY_dge_ALLtissues_AgeCovariate.csv"), check.names = FALSE)
+
+LIHC_df = de_data[, grep("LIHC",colnames(de_data))]
+rownames(LIHC_df) = de_data$genes
+
+# LOY_geneIDs_up_list,
+# LOY_geneIDs_down_list
+
+# upset
+input_lists <- list(
+  XCI_up = XCI_geneIDs_up_list,
+  XCI_down = XCI_geneIDs_down_list,
+  LOX_up = LOX_geneIDs_up_list,
+  LOX_down = LOX_geneIDs_down_list,
+  LOY_up = LOY_geneIDs_up_list,
+  LOY_down = LOY_geneIDs_down_list
+)
+
+# Convert to binary presence/absence matrix
+input_data <- fromList(input_lists)
+
+# Upset plot
+pdf(paste0(working_directory,"upset_sig60_XCI_LOX_LOY_AgeCovar.pdf"), width = 6, height = 4)  
+UpSetR::upset(input_data, nsets = 6, sets = c("LOY_down", "LOX_down", "XCI_down", "LOY_up", "LOX_up",  "XCI_up"), keep.order = T, nintersects = NA)
+dev.off()
+
+# save intersect lists
+intersection_up_LOX_XCI = Reduce(intersect,list(LOX_geneIDs_up_list,XCI_geneIDs_up_list))
+symbol_lookup <- merge(data.frame(genes = intersection_up_LOX_XCI), de_data, by = "genes", all.x = TRUE)
+symbol_lookup = symbol_lookup[, colnames(symbol_lookup) %in% c("genes","symbol")]
+write.csv(symbol_lookup, file = "intersection_up_LOX_XCI_genes.csv", row.names = FALSE)
+
+intersection_down_LOX_XCI = Reduce(intersect,list(LOX_geneIDs_down_list,XCI_geneIDs_down_list))
+symbol_lookup <- merge(data.frame(genes = intersection_down_LOX_XCI), de_data, by = "genes", all.x = TRUE)
+symbol_lookup = symbol_lookup[, colnames(symbol_lookup) %in% c("genes","symbol")]
+write.csv(symbol_lookup, file = "intersection_down_LOX_XCI_genes.csv", row.names = FALSE)
+
+intersection_up_LOX_LOY = Reduce(intersect,list(LOX_geneIDs_up_list,LOY_geneIDs_up_list))
+symbol_lookup <- merge(data.frame(genes = intersection_up_LOX_LOY), de_data, by = "genes", all.x = TRUE)
+symbol_lookup = symbol_lookup[, colnames(symbol_lookup) %in% c("genes","symbol")]
+write.csv(symbol_lookup, file = "intersection_up_LOX_LOY_genes.csv", row.names = FALSE)
+
+intersection_down_LOX_LOY = Reduce(intersect,list(LOX_geneIDs_down_list,LOY_geneIDs_down_list))
+symbol_lookup <- merge(data.frame(genes = intersection_down_LOX_LOY), de_data, by = "genes", all.x = TRUE)
+symbol_lookup = symbol_lookup[, colnames(symbol_lookup) %in% c("genes","symbol")]
+write.csv(symbol_lookup, file = "intersection_down_LOX_LOY_genes.csv", row.names = FALSE)
+
+
+
+```
+
+
+# Mapping fold change by chromosomal location
+
+```{r chr_location, eval=FALSE, include=FALSE}
+
+chr_length_table = read.csv("C:/Users/splaisie/ASU Dropbox/Seema Plaisier/BackupASU/UCSC_Table_Browser/chr_lengths.csv", header = TRUE)
+
+genes_to_map = c(XCI_geneIDs_to_keep_list, LOX_geneIDs_to_keep_list, LOY_geneIDs_to_keep_list)
+
+chr_info = na.omit(table[table$Gene.stable.ID.version %in% genes_to_map,])
+chr_info = chr_info[chr_info$chr != "-",]
+
+chr_info <- chr_info %>%
+  mutate(gene_colors = case_when( # colorblind safe colors
+    Gene.stable.ID.version %in% XCI_geneIDs_up_list ~ "#E69F00",
+    Gene.stable.ID.version %in% XCI_geneIDs_down_list ~ "#56B4E9",
+    Gene.stable.ID.version %in% LOX_geneIDs_up_list ~ "#009E73",
+    Gene.stable.ID.version %in% LOX_geneIDs_down_list ~ "#F0E442",
+    Gene.stable.ID.version %in% LOY_geneIDs_up_list ~ "#D55E00",
+    Gene.stable.ID.version %in% LOY_geneIDs_down_list ~ "#CC79A7",
+    TRUE ~ "white"  # fallback color if not in any list
+  ))  
+
+chr_order = c("chrX","chrY","chr1","chr2","chr3","chr4","chr5","chr6","chr7","chr8","chr9","chr10","chr11","chr12","chr13","chr14","chr15","chr16","chr17","chr18","chr19","chr20","chr21","chr22","chr23")
+chr_order = chr_order[chr_order %in% levels(as.factor(chr_info$chr))]
+chr_info$chr = factor(chr_info$chr, levels = chr_order)
+
+pdf(paste0(working_directory,"chr_location_XCI_LOX_LOY.pdf"), width = 10, height = 30)
+
+ggplot(chr_info, aes(x = chr_info$cdsStart)) +
+  geom_vline(aes(xintercept = chr_info$cdsStart), color = chr_info$gene_colors) +
+  geom_text(aes(y = 0, label = Gene.name), angle = 90, vjust = -0.5, hjust = 0, size = 2) +
+  geom_vline(data = chr_length_table, aes(xintercept = length), color = "black") +
+  labs(title = "Gene Start Positions on Chromosome",
+       x = "Chromosome Position",
+       y = "") +
+  facet_wrap(~factor(chr, levels = chr_order), ncol = 1) +
+  scale_x_continuous(labels = label_number(scale_cut = cut_short_scale())) +
+  theme(axis.text.x = element_text(angle = 90, hjust = 1)) +
+  theme_minimal()
+
+dev.off()
+
+```
+
+# Circos plot
+
+```{r}
+
+library(circlize)
+
+# get the info we need for circos
+
+# set colors of lines for genes
+#  red for increased relative to XaXi, blue for decreased relative to XaXi
+XCI_geneIDs_all_df$gene_colors = ifelse(XCI_geneIDs_all_df$dir == "up","red","blue") 
+LOX_geneIDs_all_df$gene_colors = ifelse(LOX_geneIDs_all_df$dir == "up","red","blue")
+LOY_geneIDs_all_df$gene_colors = ifelse(LOY_geneIDs_all_df$dir == "up","red","blue")
+SEXTYP_geneIDs_all_df$gene_colors = ifelse(SEXTYP_geneIDs_all_df$dir == "up","red","blue")
+
+XCI_circos_data = data.frame(cbind(XCI_geneIDs_all_df$chr,XCI_geneIDs_all_df$cdsStart, XCI_geneIDs_all_df$cdsEnd, XCI_geneIDs_all_df$Gene.name, XCI_geneIDs_all_df$gene_colors, XCI_geneIDs_all_df$fc))
+colnames(XCI_circos_data) = c("chr","start","end","gene","gene_colors","fc")
+XCI_circos_data = unique(XCI_circos_data)
+XCI_circos_data = XCI_circos_data[order(XCI_circos_data$gene),]
+XCI_circos_data = XCI_circos_data %>%
+  group_by(gene) %>%
+  slice(1) %>%
+  ungroup()
+XCI_circos_data$start = as.numeric(XCI_circos_data$start)
+XCI_circos_data$end = as.numeric(XCI_circos_data$end)
+XCI_circos_data$fc = as.numeric(XCI_circos_data$fc)
+
+LOY_circos_data = data.frame(cbind(LOY_geneIDs_all_df$chr,LOY_geneIDs_all_df$cdsStart, LOY_geneIDs_all_df$cdsEnd, LOY_geneIDs_all_df$Gene.name, LOY_geneIDs_all_df$gene_colors, LOY_geneIDs_all_df$fc))
+colnames(LOY_circos_data) = c("chr","start","end","gene","gene_colors","fc")
+LOY_circos_data = unique(LOY_circos_data)
+LOY_circos_data = LOY_circos_data[order(LOY_circos_data$gene),]
+LOY_circos_data = LOY_circos_data %>%
+  group_by(gene) %>%
+  slice(1) %>%
+  ungroup()
+LOY_circos_data$start = as.numeric(LOY_circos_data$start)
+LOY_circos_data$end = as.numeric(LOY_circos_data$end)
+LOY_circos_data$fc = as.numeric(LOY_circos_data$fc)
+
+LOX_circos_data = data.frame(cbind(LOX_geneIDs_all_df$chr,LOX_geneIDs_all_df$cdsStart, LOX_geneIDs_all_df$cdsEnd, LOX_geneIDs_all_df$Gene.name, LOX_geneIDs_all_df$gene_colors, LOX_geneIDs_all_df$fc))
+colnames(LOX_circos_data) = c("chr","start","end","gene","gene_colors","fc")
+LOX_circos_data = unique(LOX_circos_data)
+LOX_circos_data = LOX_circos_data[order(LOX_circos_data$gene),]
+LOX_circos_data = LOX_circos_data %>%
+  group_by(gene) %>%
+  slice(1) %>%
+  ungroup()
+LOX_circos_data$start = as.numeric(LOX_circos_data$start)
+LOX_circos_data$end = as.numeric(LOX_circos_data$end)
+LOX_circos_data$fc = as.numeric(LOX_circos_data$fc)
+
+SEXTYP_circos_data = data.frame(cbind(SEXTYP_geneIDs_all_df$chr,SEXTYP_geneIDs_all_df$cdsStart, SEXTYP_geneIDs_all_df$cdsEnd, SEXTYP_geneIDs_all_df$Gene.name, SEXTYP_geneIDs_all_df$gene_colors, SEXTYP_geneIDs_all_df$fc))
+colnames(SEXTYP_circos_data) = c("chr","start","end","gene","gene_colors","fc")
+SEXTYP_circos_data = unique(SEXTYP_circos_data)
+SEXTYP_circos_data = SEXTYP_circos_data[order(SEXTYP_circos_data$gene),]
+SEXTYP_circos_data = SEXTYP_circos_data %>%
+  group_by(gene) %>%
+  slice(1) %>%
+  ungroup()
+SEXTYP_circos_data$start = as.numeric(SEXTYP_circos_data$start)
+SEXTYP_circos_data$end = as.numeric(SEXTYP_circos_data$end)
+SEXTYP_circos_data$fc = as.numeric(SEXTYP_circos_data$fc)
+
+# get cytoband data
+cyto <- read.table("C:/Users/splaisie/ASU Dropbox/Seema Plaisier/BackupASU/UCSC_Table_Browser/cytoBand.txt", sep="\t", stringsAsFactors=FALSE)
+colnames(cyto) <- c("chr", "start", "end", "name", "gieStain")
+
+# get XIST peaks/interactiome
+XIST_peak_data <- read.table("C:/Users/splaisie/ASU Dropbox/Seema Plaisier/BackupASU/GenomicsCURE/CCLE_Fall2023/TCGA_differentialExpression/XIST_peaks.csv", sep=",", stringsAsFactors=FALSE, header = TRUE)
+
+XIST_interactome_data <- read.table("C:/Users/splaisie/ASU Dropbox/Seema Plaisier/BackupASU/GenomicsCURE/CCLE_Fall2023/TCGA_differentialExpression/XIST_interactome.csv", sep=",", stringsAsFactors=FALSE, header = TRUE)
+
+XIST_interaction_list = c(XIST_peak_data$Gene, XIST_interactome_data$XIST_interactors)
+
+XCI_XIST_intersect = intersect(XCI_geneIDs_all_df$Gene.name,XIST_interaction_list)
+LOX_XIST_intersect = intersect(LOX_geneIDs_all_df$Gene.name,XIST_interaction_list)
+LOY_XIST_intersect = intersect(LOY_geneIDs_all_df$Gene.name,XIST_interaction_list)
+SEXTYP_XIST_intersect = intersect(SEXTYP_geneIDs_all_df$Gene.name,XIST_interaction_list)
+
+XCI_XIST_data = XCI_geneIDs_all_df[XCI_geneIDs_all_df$Gene.name %in% XCI_XIST_intersect,]
+LOX_XIST_data = LOX_geneIDs_all_df[LOX_geneIDs_all_df$Gene.name %in% LOX_XIST_intersect,]
+LOY_XIST_data = LOY_geneIDs_all_df[LOY_geneIDs_all_df$Gene.name %in% LOY_XIST_intersect,]
+SEXTYP_XIST_data = SEXTYP_geneIDs_all_df[SEXTYP_geneIDs_all_df$Gene.name %in% SEXTYP_XIST_intersect,]
+
+#all_XIST_targets = rbind(XCI_XIST_data,LOX_XIST_data,LOY_XIST_data)
+XCI_XIST_targets <- XCI_XIST_data %>%
+  distinct(Gene.stable.ID.version, .keep_all = TRUE)
+LOX_XIST_targets <- LOX_XIST_data %>%
+  distinct(Gene.stable.ID.version, .keep_all = TRUE)
+LOY_XIST_targets <- LOY_XIST_data %>%
+  distinct(Gene.stable.ID.version, .keep_all = TRUE)
+SEXTYP_XIST_targets <- SEXTYP_XIST_data %>%
+  distinct(Gene.stable.ID.version, .keep_all = TRUE)
+
+XCI_XIST_targets$Gene.stable.ID.version = NULL
+XCI_XIST_targets$fc = NULL
+XCI_XIST_targets$dir = NULL
+XCI_XIST_targets$Gene.name = NULL
+colnames(XCI_XIST_targets) = c("chr","start","end")
+
+LOX_XIST_targets$Gene.stable.ID.version = NULL
+LOX_XIST_targets$fc = NULL
+LOX_XIST_targets$dir = NULL
+LOX_XIST_targets$Gene.name = NULL
+colnames(LOX_XIST_targets) = c("chr","start","end")
+
+LOY_XIST_targets$Gene.stable.ID.version = NULL
+LOY_XIST_targets$fc = NULL
+LOY_XIST_targets$dir = NULL
+LOY_XIST_targets$Gene.name = NULL
+colnames(LOY_XIST_targets) = c("chr","start","end")
+
+SEXTYP_XIST_targets$Gene.stable.ID.version = NULL
+SEXTYP_XIST_targets$fc = NULL
+SEXTYP_XIST_targets$dir = NULL
+SEXTYP_XIST_targets$Gene.name = NULL
+colnames(SEXTYP_XIST_targets) = c("chr","start","end")
+
+# set all starting points to XIST
+#  ENSG00000229807.14  = XIST
+#  ENST00000650627.1  has all the values filled in
+XIST_start_position = X_chr_table$cdsStart[X_chr_table$Transcript.stable.ID.version == "ENST00000650627.1"]
+XIST_end_position = X_chr_table$cdsEnd[X_chr_table$Transcript.stable.ID.version == "ENST00000650627.1"]
+
+#  make one for each profile
+XCI_XIST_start = XCI_XIST_targets
+XCI_XIST_start$chr = "chrX"
+XCI_XIST_start$start = XIST_start_position
+XCI_XIST_start$end = XIST_end_position
+
+LOX_XIST_start = LOX_XIST_targets
+LOX_XIST_start$chr = "chrX"
+LOX_XIST_start$start = XIST_start_position
+LOX_XIST_start$end = XIST_end_position
+
+LOY_XIST_start = LOY_XIST_targets
+LOY_XIST_start$chr = "chrX"
+LOY_XIST_start$start = XIST_start_position
+LOY_XIST_start$end = XIST_end_position
+
+SEXTYP_XIST_start = SEXTYP_XIST_targets
+SEXTYP_XIST_start$chr = "chrX"
+SEXTYP_XIST_start$start = XIST_start_position
+SEXTYP_XIST_start$end = XIST_end_position
+
+# get chrY TF targets
+
+# ------ KDM5D -------
+
+KDM5D_TFlink_data <- read.table("C:/Users/splaisie/ASU Dropbox/Seema Plaisier/BackupASU/GenomicsCURE/CCLE_Fall2023/TCGA_differentialExpression/chrY_TF_targets/TFLink_targets_of_KDM5D.tsv", sep="\t", stringsAsFactors=FALSE, header = TRUE)
+
+KDM5D_interaction_list = c(KDM5D_TFlink_data$Name.Target)
+KDM5D_interaction_list = unique(KDM5D_interaction_list)
+
+LOY_KDM5D_intersect = intersect(LOY_geneIDs_all_df$Gene.name,KDM5D_interaction_list)
+LOY_KDM5D_data = LOY_geneIDs_all_df[LOY_geneIDs_all_df$Gene.name %in% LOY_KDM5D_intersect,]
+LOY_KDM5D_targets <- LOY_KDM5D_data %>%
+  distinct(Gene.stable.ID.version, .keep_all = TRUE)
+
+LOY_KDM5D_targets$Gene.stable.ID.version = NULL
+LOY_KDM5D_targets$fc = NULL
+LOY_KDM5D_targets$dir = NULL
+LOY_KDM5D_targets$Gene.name = NULL
+colnames(LOY_KDM5D_targets) = c("chr","start","end")
+
+SEXTYP_KDM5D_intersect = intersect(SEXTYP_geneIDs_all_df$Gene.name,KDM5D_interaction_list)
+SEXTYP_KDM5D_data = SEXTYP_geneIDs_all_df[SEXTYP_geneIDs_all_df$Gene.name %in% SEXTYP_KDM5D_intersect,]
+SEXTYP_KDM5D_targets <- SEXTYP_KDM5D_data %>%
+  distinct(Gene.stable.ID.version, .keep_all = TRUE)
+
+SEXTYP_KDM5D_targets$Gene.stable.ID.version = NULL
+SEXTYP_KDM5D_targets$fc = NULL
+SEXTYP_KDM5D_targets$dir = NULL
+SEXTYP_KDM5D_targets$Gene.name = NULL
+colnames(SEXTYP_KDM5D_targets) = c("chr","start","end")
+
+# set all starting points to KDM5D
+#  ENST00000317961.9  = KDM5D transcript id with all values filled in
+KDM5D_start_position = Y_chr_table$cdsStart[Y_chr_table$Transcript.stable.ID.version == "ENST00000317961.9"]
+KDM5D_end_position = Y_chr_table$cdsEnd[Y_chr_table$Transcript.stable.ID.version == "ENST00000317961.9"]
+
+#  make one for each profile
+LOY_KDM5D_start = LOY_KDM5D_targets
+LOY_KDM5D_start$chr = "chrY"
+LOY_KDM5D_start$start = KDM5D_start_position
+LOY_KDM5D_start$end = KDM5D_end_position
+
+SEXTYP_KDM5D_start = SEXTYP_KDM5D_targets
+SEXTYP_KDM5D_start$chr = "chrY"
+SEXTYP_KDM5D_start$start = KDM5D_start_position
+SEXTYP_KDM5D_start$end = KDM5D_end_position
+
+# make circos plot
+
+#pdf("C:/Users/splaisie/ASU Dropbox/Seema Plaisier/BackupASU/GenomicsCURE/CCLE_Fall2023/TCGA_differentialExpression/circos_agecovar_sig60.pdf")
+pdf("C:/Users/splaisie/ASU Dropbox/Seema Plaisier/BackupASU/GenomicsCURE/CCLE_Fall2023/TCGA_differentialExpression/circos_agecovar_sig60_withsextyp.pdf")
+
+
+# intialize with cytoband data
+circos.clear()
+circos.initializeWithIdeogram(species = "hg38")
+#circos.par("track.margin" = c(0, 0), "cell.padding" = c(0, 0, 0, 0))
+#circos.par("track.margin" = c(0, 0), "cell.padding" = c(0, 0, 0, 0), 
+#           "start.degree" = 90, "gap.degree" = 0)  # gap.degree controls sector gap
+
+# Track 1: XCI_geneIDs_all_df
+circos.genomicTrack(XCI_circos_data, ylim = c(0, 240136285), panel.fun = function(region, value, ...) {
+  circos.genomicRect(region, value, col = value$gene_colors, border = value$gene_colors)
+  #circos.genomicText(region, value, labels = value$gene, cex = 0.6, adj = c(0, 0.5))
+}, track.height = 0.15)
+
+# Track 2: LOX_geneIDs_all_df
+circos.genomicTrack(LOX_circos_data, ylim = c(0, 240136285), panel.fun = function(region, value, ...) {
+  circos.genomicRect(region, value, col = value$gene_colors, border = value$gene_colors)
+  #circos.genomicText(region, value, labels = value$gene, cex = 0.6, adj = c(0, 0.5))
+}, track.height = 0.15)
+
+# Track 3: LOY_geneIDs_all_df
+circos.genomicTrack(LOY_circos_data, ylim = c(0, 240136285), panel.fun = function(region, value, ...) {
+  circos.genomicRect(region, value, col = value$gene_colors, border = value$gene_colors)
+  #circos.genomicText(region, value, labels = value$gene, cex = 0.6, adj = c(0, 0.5))
+}, track.height = 0.15)
+
+# Track 3.5: LOY_geneIDs_all_df
+circos.genomicTrack(SEXTYP_circos_data, ylim = c(0, 240136285), panel.fun = function(region, value, ...) {
+  circos.genomicRect(region, value, col = value$gene_colors, border = value$gene_colors)
+  #circos.genomicText(region, value, labels = value$gene, cex = 0.6, adj = c(0, 0.5))
+}, track.height = 0.15)
+
+
+# Track 4 - 5: XIST interactors for each profile
+circos.genomicLink(XCI_XIST_start, XCI_XIST_targets, col = "cadetblue1", border = NA, lwd = 13)
+circos.genomicLink(LOX_XIST_start, LOX_XIST_targets, col = "deeppink1", border = NA, lwd = 13)
+circos.genomicLink(LOY_XIST_start, LOY_XIST_targets, col = "chartreuse3", border = NA, lwd = 13)
+
+# Track 6: SRY transcription factor targets for LOY
+# circos.genomicLink(LOY_SRY_start, LOY_SRY_targets, col = "orange", border = NA, lwd = 13)
+
+# Track 7: KDM5D transcription factor targets for LOY
+circos.genomicLink(LOY_KDM5D_start, LOY_KDM5D_targets, col = "darkorchid2", border = NA, lwd = 13)
+circos.genomicLink(SEXTYP_KDM5D_start, SEXTYP_KDM5D_targets, col = "orange", border = NA, lwd = 13)
+
+dev.off()
+```
+```{r random_extras, eval=FALSE, include=FALSE}
+
+# ------ SRY -------
+
+SRY_motif_data <- read.table("C:/Users/splaisie/ASU Dropbox/Seema Plaisier/BackupASU/GenomicsCURE/CCLE_Fall2023/TCGA_differentialExpression/chrY_TF_targets/fullGenome_motifHits_V_SRY_02_M00160_genename.csv", sep=",", stringsAsFactors=FALSE, header = TRUE)
+
+SRY_motif_data2 <- read.table("C:/Users/splaisie/ASU Dropbox/Seema Plaisier/BackupASU/GenomicsCURE/CCLE_Fall2023/TCGA_differentialExpression/chrY_TF_targets/fullGenome_motifHits_V_SRY_05_M02917_genename.csv", sep=",", stringsAsFactors=FALSE, header = TRUE, quote = "",fill = TRUE)
+
+SRY_motif_data3 <- read.table("C:/Users/splaisie/ASU Dropbox/Seema Plaisier/BackupASU/GenomicsCURE/CCLE_Fall2023/TCGA_differentialExpression/chrY_TF_targets/fullGenome_motifHits_V_SRY_07_M02813_genename.csv", sep=",", stringsAsFactors=FALSE, header = TRUE, quote = "",fill = TRUE)
+
+SRY_ChEA_data <- read.table("C:/Users/splaisie/ASU Dropbox/Seema Plaisier/BackupASU/GenomicsCURE/CCLE_Fall2023/TCGA_differentialExpression/chrY_TF_targets/TF_ChEA_Harmonize_SRY_list_table.csv", sep=",", stringsAsFactors=FALSE, header = TRUE)
+
+SRY_Jaspar_data <- read.table("C:/Users/splaisie/ASU Dropbox/Seema Plaisier/BackupASU/GenomicsCURE/CCLE_Fall2023/TCGA_differentialExpression/chrY_TF_targets/TF_Jaspar_Harmonize_SRY_list_table.csv", sep=",", stringsAsFactors=FALSE, header = TRUE)
+
+SRY_interaction_list = c(SRY_motif_data$gene_symbol, SRY_motif_data2$gene_symbol, SRY_motif_data3$gene_symbol, SRY_ChEA_data$gene_symbol,SRY_Jaspar_data$gene_symbol)
+SRY_interaction_list = unique(SRY_interaction_list)
+
+LOY_SRY_intersect = intersect(LOY_geneIDs_all_df$Gene.name,SRY_interaction_list)
+
+LOY_SRY_data = LOY_geneIDs_all_df[LOY_geneIDs_all_df$Gene.name %in% LOY_SRY_intersect,]
+
+LOY_SRY_targets <- LOY_SRY_data %>%
+  distinct(Gene.stable.ID.version, .keep_all = TRUE)
+
+
+LOY_SRY_targets$Gene.stable.ID.version = NULL
+LOY_SRY_targets$fc = NULL
+LOY_SRY_targets$dir = NULL
+LOY_SRY_targets$Gene.name = NULL
+colnames(LOY_SRY_targets) = c("chr","start","end")
+
+# set all starting points to SRY
+#  ENSG00000184895.8  = SRY
+SRY_start_position = Y_chr_table$cdsStart[Y_chr_table$Gene.stable.ID.version == "ENSG00000184895.8"]
+SRY_end_position = Y_chr_table$cdsEnd[Y_chr_table$Gene.stable.ID.version == "ENSG00000184895.8"]
+
+#  make one for each profile
+LOY_SRY_start = LOY_SRY_targets
+LOY_SRY_start$chr = "chrY"
+LOY_SRY_start$start = SRY_start_position
+LOY_SRY_start$end = SRY_end_position
+
+
+#pathway_colors <- rainbow(length(all_hallmarks_list))
+
+# qual_col_pals = brewer.pal.info[brewer.pal.info$category == 'qual',]
+# col_vector = unlist(mapply(brewer.pal, qual_col_pals$maxcolors, rownames(qual_col_pals)))
+# 
+# # Generate 40 distinct cool colors (hue: 180°–300°)
+# cool_colors <- qualitative_hcl(40, h = c(180, 300), c = 70, l = 60)
+# 
+# # Generate 60 distinct warm colors (hue: 0°–60° and 300°–360°)
+# # Trick: Generate in two parts and combine
+# warm_colors <- c(
+#   qualitative_hcl(30, h = c(0, 60), c = 70, l = 60),
+#   qualitative_hcl(30, h = c(300, 360), c = 70, l = 60)
+# )
+#colors_blues = sequential_hcl(40, h = 260, c = 100, l = c(95, 30))
+#colors_greens = sequential_hcl(50, h = 130, c = 100, l = c(95, 30))
+
+
+```
+
+
+```{r LOX, eval=FALSE, include=FALSE, tidy=TRUE, tidy.opts=list(width.cutoff=60)}
+
+# OLD
+
+de_data = read.csv(paste0(working_directory,"TCGA_LOX_dge_ALLtissues.csv"), check.names = FALSE)
+lfc_df = de_data[, grep("logFC",colnames(de_data))]
+rownames(lfc_df) = de_data$genes
+pval_df = de_data[, grep("P.Value",colnames(de_data))]
+rownames(pval_df) = de_data$genes
+
+# Convert to matrices and ensure same row order
+lfc_matrix <- as.matrix(lfc_df)
+pval_matrix <- as.matrix(pval_df)
+
+# Filter those for which genes we want to show
+
+# Create logical matrix for significance (TRUE if p < 0.05)
+sig_matrix <- pval_matrix < 0.05
+
+# Calculate proportion of significant p-values per gene (row)
+sig_proportion <- rowSums(sig_matrix) / ncol(lfc_df)
+
+# Filter genes where at least 80% of p-values are significant
+genes_to_keep <- sig_proportion >= 0.8
+#write.csv(genes_to_keep, file = "test.csv")
+
+# Subset both matrices
+filtered_lfc_df <- lfc_matrix[genes_to_keep, ]
+
+# Filter out genes not all in the same direction
+filtered_lfc_df <- filtered_lfc_df[apply(filtered_lfc_df, 1, function(row) {
+  all(row > 0) || all(row < 0)
+}), ]
+
+filtered_pval_df <- pval_matrix[rownames(filtered_lfc_df), ]
+
+# Convert to matrices and ensure same row order
+lfc_matrix <- as.matrix(filtered_lfc_df)
+pval_matrix <- as.matrix(filtered_pval_df)
+
+# Order by absolute value
+ordered_cols <- order(colMeans(abs(lfc_matrix)), decreasing = TRUE)
+lfc_matrix <- lfc_matrix[, ordered_cols]
+
+# Create text matrix: "*" where significant, "" elsewhere
+sig_matrix <- pval_matrix < 0.05
+text_mat <- ifelse(sig_matrix, "*", "")
+
+# Set row names to be the gene names
+gene_ids = rownames(lfc_matrix)
+gene_symbols = de_data$symbol[match(gene_ids, de_data$genes)]
+gene_symbols[is.na(gene_symbols)] = gene_ids[is.na(gene_symbols)]  # fallback to gene ID
+
+# Shorten colnames
+tissue_types = colnames(lfc_matrix)
+tissue_types = gsub("TCGA-","",tissue_types)
+tissue_types = gsub("_logFC","",tissue_types)
+
+# Define row annotations
+metascape_annotation = read.csv(paste0(working_directory,"Metascape_TCGA_LOX_dge_ALLtissues_allFC03plus/metascape_result.csv"))
+
+cancer_matches = grepl("cancer|tumor", metascape_annotation$Disease...Drugs..ChatGPT., ignore.case = TRUE) | grepl("cancer|tumor", metascape_annotation$Protein.Functions..ChatGPT., ignore.case = TRUE)
+cancer_genes = metascape_annotation$MyList[cancer_matches]
+
+has_drugs <- metascape_annotation$Drug..DrugBank. != "None" & metascape_annotation$Drug..DrugBank. != ""
+drug_genes = metascape_annotation$MyList[has_drugs]
+
+MYC_matches = grepl("MYC", metascape_annotation$Hallmark.Gene.Sets., ignore.case = TRUE) 
+MYC_genes = metascape_annotation$MyList[MYC_matches]
+
+estrogen_matches = grepl("ESTROGEN", metascape_annotation$Hallmark.Gene.Sets., ignore.case = TRUE) 
+estrogen_genes = metascape_annotation$MyList[estrogen_matches]
+
+respiration_matches = metascape_annotation$R.HSA.1428517.Aerobic.respiration.and.respir == "1"
+respiration_genes = metascape_annotation$MyList[respiration_matches]
+
+translation_matches = metascape_annotation$GO.0006412.translation == "1"
+translation_genes = metascape_annotation$MyList[translation_matches]
+
+stress_matches = metascape_annotation$R.HSA.1428517.Aerobic.respiration.and.respir == "1" 
+stress_genes = metascape_annotation$MyList[stress_matches]
+
+mitochondria_matches = metascape_annotation$R.HSA.1428517.Aerobic.respiration.and.respir == "1" 
+mitochondria_genes = metascape_annotation$MyList[mitochondria_matches]
+
+# set row annotation bar
+genes <- rownames(lfc_matrix)
+genes_base = sub("\\..*$","", genes)
+is_cancer <- genes %in% cancer_genes
+has_drug <- genes %in% drug_genes
+with_MYC <- genes %in% MYC_genes
+with_estrogen = genes %in% estrogen_genes
+is_respiration <- genes %in% respiration_genes
+is_translation <- genes %in% translation_genes
+is_stress <- genes %in% stress_genes
+is_mitochondria <- genes %in% mitochondria_genes
+is_sexchrgene = genes_base %in% sex_chr_table$Gene.stable.ID
+
+row_anno <- rowAnnotation(
+  Cancer = is_cancer,
+  DrugBank = has_drug,
+  Estrogen = with_estrogen,
+  Aerobic_Respiration = is_respiration,
+  Translation = is_translation,
+  Stress_Response = is_stress,
+  Mitochondria_Complex = is_mitochondria,
+  Sex_Chr_Gene = is_sexchrgene,
+  col = list(
+    Cancer = c("TRUE" = "yellow", "FALSE" = "white"),
+    DrugBank = c("TRUE" = "blue", "FALSE" = "white"),
+    MYC = c("TRUE" = "grey", "FALSE" = "white"), 
+    Estrogen = c("TRUE" = "grey", "FALSE" = "white"),
+    Aerobic_Respiration =  c("TRUE" = "green", "FALSE" = "white"), 
+    Translation =  c("TRUE" = "green", "FALSE" = "white"), 
+    Stress_Response =  c("TRUE" = "green", "FALSE" = "white"), 
+    Mitochondria_Complex =  c("TRUE" = "green", "FALSE" = "white"), 
+    Sex_Chr_Gene = c("TRUE" = "maroon", "FALSE" = "white")
+  ),
+  show_annotation_name = TRUE,
+  border = TRUE
+)
+
+pdf(paste0(working_directory,"TCGA_LOX_dge_ALLtissues.sigheatmap.pdf"), width = 8, height = 8)  # adjust size as needed
+
+# Draw heatmap
+Heatmap(
+  lfc_matrix,
+  name = "LogFC",
+  col = colorRamp2(c(-5, -2, 0, 2, 5), c("darkblue" , "blue", "white", "red", "maroon")),
+  cell_fun = function(j, i, x, y, width, height, fill) {
+    grid.text(text_mat[i, j], x, y, gp = gpar(fontsize = 5))
+  },
+  cluster_rows = TRUE,
+  cluster_columns = FALSE,
+  right_annotation = row_anno,
+  show_row_names = TRUE,
+  row_labels = gene_symbols,
+  row_names_gp = gpar(fontsize = 5),
+  show_column_names = TRUE,
+  column_labels = tissue_types,
+  #clustering_distance_rows = "euclidean",
+  clustering_distance_rows = "euclidean"
+)
+
+dev.off()
+
+```
+
+
+```{r DDX3Y, eval=FALSE,include=FALSE, tidy=TRUE, tidy.opts=list(width.cutoff=60)}
+
+de_data = read.csv(paste0(working_directory,"TCGA_DDX3Yloss_dge_ALLtissues.csv"), check.names = FALSE)
+lfc_df = de_data[, grep("logFC",colnames(de_data))]
+rownames(lfc_df) = de_data$genes
+pval_df = de_data[, grep("P.Value",colnames(de_data))]
+rownames(pval_df) = de_data$genes
+
+# Convert to matrices and ensure same row order
+lfc_matrix <- as.matrix(lfc_df)
+pval_matrix <- as.matrix(pval_df)
+
+# Filter those for which genes we want to show
+
+# Create logical matrix for significance (TRUE if p < 0.05)
+sig_matrix <- pval_matrix < 0.05
+
+# Calculate proportion of significant p-values per gene (row)
+sig_proportion <- rowSums(sig_matrix) / ncol(lfc_df)
+
+# Filter genes where at least 100% of p-values are significant
+genes_to_keep <- sig_proportion >= 1
+#write.csv(genes_to_keep, file = "test.csv")
+
+# Subset both matrices
+filtered_lfc_df <- lfc_matrix[genes_to_keep, ]
+
+# Filter out genes not all in the same direction
+filtered_lfc_df <- filtered_lfc_df[apply(filtered_lfc_df, 1, function(row) {
+  #all(row > 0) || all(row < 0)
+  all(row > 2) || all(row < -2)
+}), ]
+
+filtered_pval_df <- pval_matrix[rownames(filtered_lfc_df), ]
+
+# Convert to matrices and ensure same row order
+lfc_matrix <- as.matrix(filtered_lfc_df)
+pval_matrix <- as.matrix(filtered_pval_df)
+
+# Order by absolute value
+ordered_cols <- order(colMeans(abs(lfc_matrix)), decreasing = TRUE)
+lfc_matrix <- lfc_matrix[, ordered_cols]
+
+# Create text matrix: "*" where significant, "" elsewhere
+sig_matrix <- pval_matrix < 0.05
+text_mat <- ifelse(sig_matrix, "*", "")
+
+# Set row names to be the gene names
+gene_ids = rownames(lfc_matrix)
+gene_symbols = de_data$symbol[match(gene_ids, de_data$genes)]
+gene_symbols[is.na(gene_symbols)] = gene_ids[is.na(gene_symbols)]  # fallback to gene ID
+
+# Shorten colnames
+tissue_types = colnames(lfc_matrix)
+tissue_types = gsub("TCGA-","",tissue_types)
+tissue_types = gsub("_logFC","",tissue_types)
+
+# Define row annotations
+metascape_annotation = read.csv(paste0(working_directory,"Metascape_TCGA_chrY_propsig80/metascape_result.csv"))
+
+cancer_matches = grepl("cancer|tumor", metascape_annotation$Disease...Drugs..ChatGPT., ignore.case = TRUE) | grepl("cancer|tumor", metascape_annotation$Protein.Functions..ChatGPT., ignore.case = TRUE)
+cancer_genes = metascape_annotation$MyList[cancer_matches]
+
+has_drugs <- metascape_annotation$Drug..DrugBank. != "None" & metascape_annotation$Drug..DrugBank. != ""
+drug_genes = metascape_annotation$MyList[has_drugs]
+
+MYC_matches = grepl("MYC", metascape_annotation$Hallmark.Gene.Sets., ignore.case = TRUE) 
+MYC_genes = metascape_annotation$MyList[MYC_matches]
+
+PI3K_matches = grepl("PI3K", metascape_annotation$Hallmark.Gene.Sets., ignore.case = TRUE) 
+PI3K_genes = metascape_annotation$MyList[PI3K_matches]
+
+EMT_matches = grepl("EPITHELIAL MESENCHYMAL TRANSITION", metascape_annotation$Hallmark.Gene.Sets., ignore.case = TRUE) 
+EMT_genes = metascape_annotation$MyList[EMT_matches]
+
+vasculature_matches = metascape_annotation$GO.0001944.vasculature.development == "1" | metascape_annotation$GO.0030097.hemopoiesis | metascape_annotation$WP3888.VEGFA.VEGFR2.signaling == "1" | grepl("COAGULATION", metascape_annotation$Hallmark.Gene.Sets., ignore.case = TRUE) | grepl("COMPLEMENT", metascape_annotation$Hallmark.Gene.Sets., ignore.case = TRUE)
+vasculature_genes = metascape_annotation$MyList[vasculature_matches] 
+
+immune_matches = metascape_annotation$R.HSA.1280218.Adaptive.Immune.System == "1" | metascape_annotation$GO.0050778.positive.regulation.of.immune == "1" | metascape_annotation$R.HSA.1280215.Cytokine.Signaling.in.Immune.s == "1" | grepl("INTERFERON", metascape_annotation$Hallmark.Gene.Sets., ignore.case = TRUE) | grepl("INFLAM", metascape_annotation$Hallmark.Gene.Sets., ignore.case = TRUE)
+immune_genes = metascape_annotation$MyList[immune_matches]
+
+# set row annotation bar
+genes <- rownames(lfc_matrix)
+genes_base = sub("\\..*$","", genes)
+is_cancer <- genes %in% cancer_genes
+has_drug <- genes %in% drug_genes
+with_MYC <- genes %in% MYC_genes
+with_PI3K <- genes %in% PI3K_genes
+with_EMT <- genes %in% EMT_genes
+is_vasc <- genes %in% vasculature_genes
+is_immune <- genes %in% immune_genes
+is_sexchrgene = genes_base %in% sex_chr_table$Gene.stable.ID
+
+row_anno <- rowAnnotation(
+  Cancer = is_cancer,
+  DrugBank = has_drug,
+  Vasculature = is_vasc,
+  Immune = is_immune,
+  EMT = with_EMT,
+  MYC = with_MYC,
+  PI3K = with_PI3K,
+  Sex_Chr_Gene = is_sexchrgene,
+  col = list(
+    Cancer = c("TRUE" = "yellow", "FALSE" = "white"),
+    DrugBank = c("TRUE" = "blue", "FALSE" = "white"),
+    Vasculature =  c("TRUE" = "green", "FALSE" = "white"), 
+    Immune =  c("TRUE" = "green", "FALSE" = "white"), 
+    EMT =  c("TRUE" = "green", "FALSE" = "white"), 
+    MYC = c("TRUE" = "grey", "FALSE" = "white"), 
+    PI3K = c("TRUE" = "grey", "FALSE" = "white"), 
+    Sex_Chr_Gene = c("TRUE" = "maroon", "FALSE" = "white")
+  ),
+  show_annotation_name = TRUE,
+  border = TRUE
+)
+
+#pdf(paste0(working_directory,"TCGA_chrY_dge_ALLtissues.sigheatmap_samedir.pdf"), width = 8, height = 8)
+pdf(paste0(working_directory,"TCGA_chrY_dge_ALLtissues.sigheatmap_lfc2.pdf"), width = 8, height = 8)  
+
+# Draw heatmap
+Heatmap(
+  lfc_matrix,
+  name = "LogFC",
+  col = colorRamp2(c(-5, -2, 0, 2, 5), c("darkblue", "blue", "white", "red", "maroon")),
+  # cell_fun = function(j, i, x, y, width, height, fill) {
+  #   grid.text(text_mat[i, j], x, y, gp = gpar(fontsize = 5))
+  # },
+  cluster_rows = TRUE,
+  cluster_columns = FALSE,
+  right_annotation = row_anno,
+  show_row_names = TRUE,
+  row_labels = gene_symbols,
+  row_names_gp = gpar(fontsize = 5),
+  show_column_names = TRUE,
+  column_labels = tissue_types,
+  #clustering_distance_rows = "euclidean",
+  clustering_distance_rows = "euclidean"
+)
+
+#draw(ht, heatmap_legend_side = "bottom")
+
+dev.off()
+
+```
+
+# Clustering differential expression profiles
+
+
+```{r clusterDEG, tidy=TRUE, tidy.opts=list(width.cutoff=60)}
+
+# Differential gene expression results data file that contains logFC and p-value values
+
+#de_data = read.csv(paste0(working_directory,"TCGA_XCI_dge_ALLtissues_AgeCovariate.csv"), check.names = FALSE)
+#de_data = read.csv(paste0(working_directory,"TCGA_LOX_dge_ALLtissues_vsexpected_AgeCovariate.csv"), check.names = FALSE)
+de_data = read.csv(paste0(working_directory,"TCGA_LOY_dge_ALLtissues_AgeCovariate.csv"), check.names = FALSE)
+
+lfc_df = de_data[, grep("logFC",colnames(de_data))]
+rownames(lfc_df) = de_data$genes
+pval_df = de_data[, grep("P.Value",colnames(de_data))]
+rownames(pval_df) = de_data$genes
+adjpval_df = de_data[, grep("adj",colnames(de_data))]
+rownames(adjpval_df) = de_data$genes
+ave_df = de_data[, grep("AveExpr",colnames(de_data))]
+rownames(ave_df) = de_data$genes
+
+# correlation heatmap
+
+cor_matrix <- cor(lfc_df, method = "spearman")  # or "pearson"
+cor_matrix[upper.tri(cor_matrix)] <- NA
+cor_melt <- melt(cor_matrix, na.rm = TRUE)
+
+ggplot(cor_melt, aes(Var2, Var1, fill = value)) +
+  geom_tile(color = "white") +
+  geom_text(aes(label = sprintf("%.1f", value)), size = 2) +  # 2 decimal places
+  scale_fill_gradient2(low = "blue", high = "red", mid = "white", 
+                       midpoint = 0, limit = c(-1,1), space = "Lab",
+                       name = "Correlation") +
+  theme_minimal() + 
+  theme(axis.text.x = element_text(angle = 45, vjust = 1, 
+                                   size = 8, hjust = 1)) +
+  coord_fixed() +
+  labs(x = "Sample", y = "Sample")
+
+#ggsave("correlation_logfc_XCI.pdf")
+#ggsave("correlation_logfc_LOX.pdf")
+ggsave("correlation_logfc_LOY.pdf")
+
+# heatmap
+
+# mean_expr = rowMeans(ave_df)
+# filter_low = mean_expr > 5
+# filtered_lfc = lfc_df[filter_low,]
+
+#pdf("heatmap_logfc_XCI.pdf")
+#pdf("heatmap_logfc_LOX.pdf")
+pdf("heatmap_logfc_LOY.pdf")
+
+Heatmap(
+  #as.matrix(filtered_lfc),
+  as.matrix(lfc_df),
+  col = colorRamp2(c(-5, -2, 0, 2, 5), c("darkblue" , "blue", "white", "red", "maroon")),
+  cluster_rows = TRUE,
+  cluster_columns = TRUE,
+  show_row_names = FALSE,
+  show_column_names = TRUE
+)
+
+dev.off()
+
+
+```
+
+# List all the packages used for future reference
+```{r SessionInfo}
+sessionInfo()
+```
+
