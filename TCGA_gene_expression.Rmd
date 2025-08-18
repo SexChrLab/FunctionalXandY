@@ -1,0 +1,506 @@
+---
+title: "TCGA Gene Expression"
+author: "Seema Plaisier"
+date: "`r format(Sys.time(), '%m/%d/%y')`"
+output:
+  pdf_document: default
+  html_document:
+    df_print: paged
+  word_document: default
+---
+
+## Overview
+Differential expression of TCGA data sets.  Looking at females with high vs low XIST expression, males with low vs high chrY gene expression.
+
+## Import necessary R packages
+
+
+
+```{r libraries}
+
+# check if the package has been installed
+# if not, install it
+if(!require(ggplot2)){
+    install.packages("ggplot2")
+}
+if(!require(UpSetR)){
+    install.packages("UpSetR")
+}
+
+# load packages for use
+library(ggplot2)
+library(UpSetR)
+library(limma)
+library(matrixStats)
+library(ashr)
+library(mashr)
+library(edgeR)
+library(dplyr)
+
+```
+
+## Set options for printing reports
+
+```{r Printoptions}
+
+# this will make sure that the code doesn't run off the page when printing a report
+knitr::opts_chunk$set(tidy.opts = list(width.cutoff = 50), tidy = TRUE)
+```
+
+
+## Set working directory and data directories
+
+
+``` {r SetDirectory}
+
+# store the path to the working directory in a variable 
+# make sure to include the / at the end of the directory path if you plan to put it together with the path to files inside the directory
+
+data_directory = "C:/Users/splaisie/Dropbox (ASU)/GenomicsCURE/CCLE_Fall2023/TCGA_differentialExpression/"  
+
+```
+
+# Merge annotation data
+```{r}
+
+# Get all CSV file names
+file_list <- list.files(path = "C:/Users/splaisie/ASU Dropbox/Seema Plaisier/BackupASU/GenomicsCURE/CCLE_Fall2023/TCGA_differentialExpression/clinical_info/", pattern = "*.csv", full.names = TRUE)
+file_list <- file_list[!grepl("chitest", file_list)]
+
+# Read all CSVs into a list
+data_list <- lapply(file_list, read.csv)
+
+library(plyr)
+
+# Merge by "SampleID" (or other key column)
+merged_data <- Reduce(function(x, y) rbind.fill(x, y), data_list)
+
+```
+
+
+## Reading data files
+
+```{r ReadData}
+
+# make sure you have changed the path to data_directory to your own storage space
+#   and that you have downloaded the files the names below into that directory
+
+# load the TCGA gene expression data
+TCGA_data = read.csv(paste0(data_directory,"TCGA_unstranded_all_counts.csv"), header = TRUE, check.names = FALSE)
+colnames(TCGA_data) = gsub("\\.", "-", colnames(TCGA_data))
+# boxplot(log(as.numeric(TCGA_data[TCGA_data$gene_name == "XIST", 4:ncol(TCGA_data)])))
+
+# load the annotation data
+annotation_data = read.csv(paste0(data_directory,"TCGA_annotative_data.csv"), header = TRUE, check.names = FALSE)
+
+# load the XIST and chrY calls with TPM expression
+#call_data = read.csv(paste0(data_directory,"inferred_sex_chromosome_complement-2.csv"), header = TRUE, check.names = FALSE)
+call_data = read.csv(paste0(data_directory,"inferred_sex_chromosome_complement_age.csv"), header = TRUE, check.names = FALSE)
+
+
+```
+
+## Violin plot of chosen gene
+
+```{r ChosenGeneViolin}
+
+chosen_gene = "DDX3X"
+
+```
+
+
+## Foldchange and standard error by XIST expression in females (limma voom)
+
+``` {r FemaleXISTlimmavoom}
+
+# filter for possible mislabels
+#mislabelled_female_data = read.csv("TCGA_predicted_sex_complements - Female,LowXIST,HighY.csv")
+#mislabelled_females = mislabelled_female_data$cell_line
+#female_highXIST_data = female_highXIST_data[!female_highXIST_data$X %in% mislabelled_females,]
+#female_lowXIST_data = female_lowXIST_data[!female_lowXIST_data$X %in% mislabelled_females,]
+
+
+# figure out which tissues have 2 or more with and without XIST in reported females
+
+have_enough_tissues = c()
+
+tissues_found = unlist(list(levels(as.factor(annotation_data$project_id))))
+for (tissue in tissues_found) {
+  tissue_annotations = subset(annotation_data, subset = (project_id == tissue & definition == "Primary solid Tumor"))
+  
+  # filter for high XIST and low XIST females
+  
+  tissue_female = tissue_annotations$barcode[tissue_annotations$sex == "female"]
+  tissue_lowXIST = call_data$cases[call_data$XIST_expression_category == "not expressed"]
+  tissue_highXIST = call_data$cases[call_data$XIST_expression_category == "expressed"]
+  tissue_female_lowXIST = Reduce(intersect,list(tissue_female,tissue_lowXIST))
+  tissue_female_highXIST = Reduce(intersect,list(tissue_female,tissue_highXIST))
+  
+  if (length(tissue_female_highXIST) >= 3 & length(tissue_female_lowXIST) >= 3) {
+    print(paste0(tissue, " samples: n XIST high = ", length(tissue_female_highXIST), ", n XIST low = ",length(tissue_female_lowXIST)))
+    have_enough_tissues = c(have_enough_tissues, tissue)
+  }
+}
+
+# for those tissues, limma-voom differential expression
+
+FC_df = data.frame(cbind(TCGA_data$gene_id, TCGA_data$gene_name))
+colnames(FC_df) = c("genes","symbol")
+
+for (tissue in have_enough_tissues) {
+  
+  tissue_annotations = subset(annotation_data, subset = (project_id == tissue & definition == "Primary solid Tumor"))
+  
+  # filter for high XIST and low XIST females
+  tissue_female = tissue_annotations$barcode[tissue_annotations$sex == "female"]
+  tissue_lowXIST = call_data$cases[call_data$XIST_expression_category == "not expressed"]
+  tissue_highXIST = call_data$cases[call_data$XIST_expression_category == "expressed"]
+  tissue_female_lowXIST = Reduce(intersect,list(tissue_female,tissue_lowXIST))
+  tissue_female_highXIST = Reduce(intersect,list(tissue_female,tissue_highXIST))
+  
+  # grab data from TCGA_data for those columns
+  have_high = intersect(colnames(TCGA_data), tissue_female_highXIST)
+  have_low = intersect(colnames(TCGA_data), tissue_female_lowXIST)
+  want_these = c(have_high,have_low)
+  selected_data = TCGA_data[,colnames(TCGA_data) %in% want_these]
+  rownames(selected_data) = TCGA_data$gene_id
+  
+  # create pheno data
+  pheno = data.frame(colnames(selected_data))
+  colnames(pheno) = c("TCGA_ID")
+  pheno$group = ifelse(pheno$TCGA_ID %in% have_high,"highXIST","lowXIST")
+  
+  selected_data =  na.omit(selected_data)
+  x <- DGEList(counts = selected_data, lib.size = colSums(selected_data), norm.factors = rep(1,ncol(selected_data)), samples = colnames(selected_data), group = pheno$group, genes = row.names(selected_data), remove.zeros = TRUE)
+  dim(x) # show how much is left after removing all-zero rows
+
+  samplenames = colnames(x) #save sample names for plotting below
+
+  group = as.factor(pheno$group)
+  x$samples$expression_group <- as.factor(pheno$group)
+  head(x$samples)
+  
+  # data conversion
+  cpm <- cpm(x)
+  lcpm <- cpm(x, log=TRUE)
+  L <- mean(x$samples$lib.size) * 1e-6
+  M <- median(x$samples$lib.size) * 1e-6
+  
+  # filter genes using the filterByExpr function in edgeR
+  keep.exprs <- filterByExpr(x, group=group)
+  x <- x[keep.exprs,, keep.lib.sizes=FALSE]
+  dim(x) # see how much remains after filtering out low expression genes
+
+  # normalization factors
+  x_norm <- calcNormFactors(x, method = "TMM")
+  x_norm$samples$norm.factors
+  
+  #write.csv(lcpm, file = paste0("XISTloss_lcpm_",tissue,".csv"))
+  
+  # contrast matrix
+  design <- model.matrix(~0+group) # the variable group was set to hold sample sex above
+  colnames(design) <- gsub("group", "", colnames(design))
+  contr.matrix <- makeContrasts(
+    HighvsLow = lowXIST - highXIST, 
+    levels = colnames(design))
+  
+  # limma-voom
+  v <- voom(x_norm, design, plot=TRUE)
+  vfit <- lmFit(v, design)
+  vfit <- contrasts.fit(vfit, contrasts=contr.matrix)
+  efit <- eBayes(vfit)
+  dt = decideTests(efit)
+  summary(dt)
+  diff_expression_results <- topTable(efit, coef=1, n=Inf)
+  
+  #reorder results to match original data
+  diff_expression_results$stdev = efit$stdev.unscaled
+  diff_expression_results = diff_expression_results[order(match(diff_expression_results$genes,TCGA_data$Name)),]
+  colnames(diff_expression_results)[2:ncol(diff_expression_results)] = paste0(tissue,"_", colnames(diff_expression_results))[2:ncol(diff_expression_results)]
+  
+  #write.csv(diff_expression_results, file = paste0("XISTloss_dge_",tissue,".csv"))
+  
+  # merge FC info
+  FC_df = merge(FC_df,diff_expression_results, by = "genes")
+}
+
+write.csv(FC_df, file = "C:/Users/splaisie/ASU Dropbox/Seema Plaisier/BackupASU/GenomicsCURE/CCLE_Fall2023/TCGA_differentialExpression/TCGA_XISTloss_dge_ALLtissues_confirm.csv", row.names = FALSE)
+
+```
+
+# female mashr
+
+``` {r FemaleXISTmashr, eval = FALSE, include = FALSE}
+Bhat = data.frame(FC_df %>% select(matches("logFC")))
+rownames(Bhat) = make.unique(FC_df$symbol)
+Bhat_zero_rows = which(rowSums(Bhat) == 0)
+Bhat[is.na(Bhat)] = 0
+Bhat[Bhat < 0.0001] = 0
+
+Shat = data.frame(FC_df %>% select(matches("stdev")))
+rownames(Shat) = make.unique(FC_df$symbol)
+Shat_zero_rows = which(rowSums(Shat) == 0)
+Shat[Shat < 0.0001] = 1000
+Shat[is.na(Shat)] = 1000
+
+#Bhat = Bhat[- Bhat_zero_rows]
+#Bhat = Bhat[- Shat_zero_rows]
+#Shat = Shat[- Bhat_zero_rows]
+#Shat = Shat[- Shat_zero_rows]
+
+
+# data-driven
+# load data into mashr
+mash_result = mash_set_data(Bhat = as.matrix(Bhat), Shat = as.matrix(Shat))
+
+# data-driven covariance matrix to limit the amount of genes used
+m.1by1 = mash_1by1(mash_result)
+strong = get_significant_results(m.1by1,0.05)
+U.pca = cov_pca(mash_result,2,subset=strong)
+print(names(U.pca))
+U.ed = cov_ed(mash_result, U.pca, subset=strong)
+
+# run mashr
+m.ed = mash(mash_result, U.ed)
+print(get_loglik(m.ed),digits = 10)
+
+extract_estimates = data.frame(get_lfsr(m.ed))
+#write.csv(extract_estimates,file = paste0(data_directory,"mash_extract_estimates_lfsr_dd_femaleXIST.csv"))
+
+extract_pm = data.frame(get_pm(m.ed))
+#write.csv(extract_pm,file = paste0(data_directory,"mash_extract_estimates_pm_dd_femaleXIST.csv"))
+
+extract_psd = data.frame(get_psd(m.ed))
+#write.csv(extract_psd,file = paste0(data_directory,"mash_extract_estimates_psd_dd_femaleXIST.csv"))
+
+extract_pshared = data.frame(get_pairwise_sharing(m.ed, factor = 0))
+#write.csv(extract_psd,file = paste0(data_directory,"mash_extract_estimates_pairwisesharing_dd_femaleXIST.csv"))
+
+significant_results = get_significant_results(m.ed)
+#write.csv(significant_results,file = paste0(data_directory,"mash_significant_results_dd_femaleXIST.csv"))
+
+print(get_estimated_pi(m.ed))
+
+barplot(get_estimated_pi(m.ed),las = 2)
+
+mash_plot_meta(m.ed,get_significant_results(m.ed)[1])
+
+# canonical
+
+# run mashr
+#mash_result = mash_set_data(Bhat = as.matrix(Bhat), Shat = as.matrix(Shat))
+
+U.c = cov_canonical(mash_result)  
+m.c = mash(mash_result, U.c)
+print(get_loglik(m.c),digits = 10)
+
+#extract_estimates = data.frame(get_lfsr(m.c))
+#write.csv(extract_estimates,file = paste0(data_directory,"mash_extract_estimates_lfsr_c_femaleXIST.csv"))
+
+#extract_pm = data.frame(get_pm(m.c))
+#write.csv(extract_pm,file = paste0(data_directory,"mash_extract_estimates_pm_c_femaleXIST.csv"))
+
+#extract_psd = data.frame(get_psd(m.c))
+#write.csv(extract_psd,file = paste0(data_directory,"mash_extract_estimates_psd_c_femaleXIST.csv"))
+
+#significant_results = get_significant_results(m.c)
+#write.csv(significant_results,file = paste0(data_directory,"mash_significant_results_c_femaleXIST.csv"))
+
+print(get_estimated_pi(m.c))
+
+barplot(get_estimated_pi(m.c),las = 2, cex.names = 0.5)
+
+mash_plot_meta(m.c,get_significant_results(m.c)[1])
+
+# combined
+m   = mash(mash_result, c(U.c,U.ed))
+
+extract_estimates = data.frame(get_lfsr(m))
+#write.csv(extract_estimates,file = paste0(data_directory,"mash_extract_estimates_lfsr_both_femaleXIST.csv"))
+
+extract_pm = data.frame(get_pm(m))
+#write.csv(extract_pm,file = paste0(data_directory,"mash_extract_estimates_pm_both_femaleXIST.csv"))
+
+extract_psd = data.frame(get_psd(m))
+#write.csv(extract_psd,file = paste0(data_directory,"mash_extract_estimates_psd_both_femaleXIST.csv"))
+
+significant_results = get_significant_results(m)
+#write.csv(significant_results,file = paste0(data_directory,"mash_significant_results_both_femaleXIST.csv"))
+
+significant_results = get_significant_results(m, thresh = 0.01)
+#write.csv(significant_results,file = paste0(data_directory,"mash_significant_results_both_femaleXIST_01.csv"))
+
+significant_results = get_significant_results(m, thresh = 0.001)
+#write.csv(significant_results,file = paste0(data_directory,"mash_significant_results_both_femaleXIST_001.csv"))
+
+print(get_estimated_pi(m))
+
+barplot(get_estimated_pi(m),las = 2, cex.names = 0.6)
+
+mash_plot_meta(m,get_significant_results(m)[1])
+
+```
+
+# Upset plot XISTloss
+
+```{r xist_upset, eval=FALSE, include=FALSE}
+
+dge_lists = list()
+dge_up_lists = list()
+dge_down_lists = list()
+
+for (tissue in have_enough_tissues) {
+  selected = FC_df %>% select(matches(tissue) | matches("genes"))
+  index_FC = grep("logFC",names(selected))
+  index_P.Value = grep("P.Value",names(selected))
+  
+  selected_genes_up = selected$genes[selected[index_FC] > 1 & selected[index_P.Value] < 0.05]
+  selected_genes_down = selected$genes[selected[index_FC] <- 1 & selected[index_P.Value] < 0.05]
+  
+  dge_lists[paste0(tissue,"_UP")] = list(selected_genes_up)
+  dge_lists[paste0(tissue,"_DOWN")] = list(selected_genes_down)
+  
+  dge_up_lists[paste0(tissue,"_UP")] = list(selected_genes_up)
+  
+  dge_down_lists[paste0(tissue,"_DOWN")] = list(selected_genes_down)
+}
+
+upset(fromList(dge_lists), order.by = "freq", nsets = length(have_enough_tissues)*2)
+
+upset(fromList(dge_up_lists), order.by = "freq", nsets = length(have_enough_tissues)*2)
+
+upset(fromList(dge_down_lists), order.by = "freq", nsets = length(have_enough_tissues)*2)
+
+
+```
+
+## Foldchange and standard error by DDX3Y expression in males (limma voom)
+
+``` {r MaleDDX3Ylimmavoom}
+
+# grab high and low DDX3Y cell lines from male patients
+
+# figure out which tissues have 2 or more tissues with and without DDX3Y in reported males
+
+have_enough_tissues = c()
+
+tissues_found = unlist(list(levels(as.factor(annotation_data$project_id))))
+for (tissue in tissues_found) {
+  tissue_annotations = subset(annotation_data, subset = (project_id == tissue & definition == "Primary solid Tumor"))
+  
+  # filter for high DDX3Y and low DDX3Y males
+  tissue_male = tissue_annotations$barcode[tissue_annotations$sex == "male"]
+  tissue_lowDDX3Y = call_data$cases[call_data$Y_inferred_complement == "."]
+  tissue_highDDX3Y = call_data$cases[call_data$Y_inferred_complement == "Y"]
+  tissue_male_lowDDX3Y = Reduce(intersect,list(tissue_male,tissue_lowDDX3Y))
+  tissue_male_highDDX3Y = Reduce(intersect,list(tissue_male,tissue_highDDX3Y))
+  print(paste0(tissue, " samples: n DDX3Y high = ", length(tissue_male_highDDX3Y), ", n DDX3Y low = ",length(tissue_male_lowDDX3Y)))
+  
+  if (length(tissue_male_highDDX3Y) >= 3 & length(tissue_male_lowDDX3Y) >= 3) {
+    have_enough_tissues = c(have_enough_tissues, tissue)
+  }
+}
+
+# for those tissues, limma-voom differential expression
+
+FC_df = data.frame(cbind(TCGA_data$gene_id, TCGA_data$gene_name))
+colnames(FC_df) = c("genes","symbol")
+
+for (tissue in have_enough_tissues) {
+  print(tissue)
+  
+  tissue_annotations = subset(annotation_data, subset = (project_id == tissue & definition == "Primary solid Tumor"))
+  
+  # filter for high DDX3Y and low DDX3Y males
+  tissue_male = tissue_annotations$barcode[tissue_annotations$sex == "male"]
+  tissue_lowDDX3Y = call_data$cases[call_data$Y_inferred_complement == "."]
+  tissue_highDDX3Y = call_data$cases[call_data$Y_inferred_complement == "Y"]
+  tissue_male_lowDDX3Y = Reduce(intersect,list(tissue_male,tissue_lowDDX3Y))
+  tissue_male_highDDX3Y = Reduce(intersect,list(tissue_male,tissue_highDDX3Y))
+  
+  # grab data from TCGA_data for those columns
+  have_high = intersect(colnames(TCGA_data), tissue_male_highDDX3Y)
+  have_low = intersect(colnames(TCGA_data), tissue_male_lowDDX3Y)
+  want_these = c(have_high,have_low)
+  selected_data = TCGA_data[, colnames(TCGA_data) %in% want_these]
+  rownames(selected_data) = TCGA_data$gene_id
+  selected_data = na.omit(selected_data)
+  
+  # create pheno data
+  pheno = data.frame(colnames(selected_data))
+  colnames(pheno) = c("TCGA_ID")
+  pheno$group = ifelse(pheno$TCGA_ID %in% have_high,"highDDX3Y","lowDDX3Y")
+  pheno$age = tissue_annotations$age_at_index[match(pheno$TCGA_ID, tissue_annotations$barcode)]
+  
+  # if any samples have age = NA, remove those rows from pheno and cols from selected_data
+  
+  to_remove = pheno$TCGA_ID[is.na(pheno$age)]
+  pheno = pheno[! pheno$TCGA_ID %in% to_remove,]
+  selected_data = selected_data[, ! colnames(selected_data) %in% to_remove]
+  if (sum(pheno$TCGA_ID == colnames(selected_data)) != nrow(pheno)) {
+    stop ("Check rows and columns!")
+  }
+  
+  x <- DGEList(counts = selected_data, lib.size = colSums(selected_data), norm.factors = rep(1,ncol(selected_data)), samples = colnames(selected_data), group = pheno$group, genes = row.names(selected_data), remove.zeros = TRUE)
+  dim(x) # show how much is left after removing all-zero rows
+
+  samplenames = colnames(x) #save sample names for plotting below
+
+  group = as.factor(pheno$group)
+  x$samples$expression_group <- as.factor(pheno$group)
+  head(x$samples)
+  
+  # data conversion
+  #cpm <- cpm(x)
+  #lcpm <- cpm(x, log=TRUE)
+  L <- mean(x$samples$lib.size) * 1e-6
+  M <- median(x$samples$lib.size) * 1e-6
+  
+  # filter genes using the filterByExpr function in edgeR
+  keep.exprs <- filterByExpr(x, group=group)
+  x <- x[keep.exprs,, keep.lib.sizes=FALSE]
+  dim(x) # see how much remains after filtering out low expression genes
+
+  # normalization factors
+  x_norm <- calcNormFactors(x, method = "TMM")
+  x_norm$samples$norm.factors
+  
+  # contrast matrix
+  design <- model.matrix(~0+group + age, data = pheno) # the variable group was set to hold sample sex above
+  colnames(design) <- gsub("group", "", colnames(design))
+  contr.matrix <- makeContrasts(
+    HighvsLow = lowDDX3Y - highDDX3Y, 
+    levels = colnames(design))
+  
+  # limma-voom
+  v <- voom(x, design, plot=TRUE)
+  vfit <- lmFit(v, design)
+  vfit <- contrasts.fit(vfit, contrasts=contr.matrix)
+  efit <- eBayes(vfit)
+  dt = decideTests(efit)
+  summary(dt)
+  diff_expression_results <- topTable(efit, coef=1, n=Inf)
+  
+  #reorder results to match original data
+  diff_expression_results$stdev = efit$stdev.unscaled
+  diff_expression_results = diff_expression_results[order(match(diff_expression_results$genes,TCGA_data$Name)),]
+  colnames(diff_expression_results)[2:ncol(diff_expression_results)] = paste0(tissue,"_", colnames(diff_expression_results))[2:ncol(diff_expression_results)]
+  
+  #write.csv(diff_expression_results, file = paste0("DDX3Yloss_dge_",tissue,".csv"))
+  
+  # merge FC info
+  FC_df = merge(FC_df,diff_expression_results, by = "genes")
+  
+}
+
+write.csv(FC_df, file = paste0("TCGA_LOY_dge_ALLtissues_AgeCovariate.csv"), row.names = FALSE)
+  
+```
+
+# List all the packages used for future reference
+
+It is always a good practice to list out all the packages you are using in your report.  It helps ensure reproducibility by you and others that use your code, and thus we report the packages and versions in the Methods section of the manuscript when you publish your work.
+
+```{r SessionInfo}
+sessionInfo()
+```
