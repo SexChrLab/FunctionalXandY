@@ -1,0 +1,324 @@
+---
+title: "TCGA Gene Expression"
+author: "Seema Plaisier"
+date: "`r format(Sys.time(), '%m/%d/%y')`"
+output:
+  pdf_document: default
+  html_document:
+    df_print: paged
+  word_document: default
+---
+
+## Overview
+Compare SCC based groups for survival differences
+
+## Import necessary R packages
+
+```{r libraries}
+
+# load packages for use
+library(ggplot2)
+library(dplyr)
+library(TCGAbiolinks)
+library(survival)
+library(survminer)
+library(rmarkdown)
+```
+
+## Set options for printing reports
+
+```{r Printoptions}
+
+# this will make sure that the code doesn't run off the page when printing a report
+knitr::opts_chunk$set(tidy.opts = list(width.cutoff = 50), tidy = TRUE)
+```
+
+
+## Set working directory and data directories
+
+
+``` {r SetDirectory}
+
+# store the path to the working directory in a variable 
+# make sure to include the / at the end of the directory path if you plan to put it together with the path to files inside the directory
+
+data_directory = "C:/Users/splaisie/Dropbox (ASU)/BackupASU/GenomicsCURE/CCLE_Fall2023/TCGA_differentialExpression/"  
+
+```
+
+## Set up sample groups
+
+```{r}
+
+TCGA_ploidy_info = read.csv("C:/Users/splaisie/ASU Dropbox/Seema Plaisier/BackupASU/GenomicsCURE/CCLE_Fall2023/XCI_escape/TCGA_ploidy_expression.csv")
+cancer_types = levels(as.factor(TCGA_ploidy_info$Cancer.Type))
+
+convert_data = read.csv("C:/Users/splaisie/ASU Dropbox/Seema Plaisier/BackupASU/UCSC_Table_Browser/Human_Gene_ID_to_name.csv")
+#TCGA_TPM_data$symbol = convert_data$Gene.name[match(rownames(TCGA_TPM_data), convert_data$Gene.stable.ID.version)]
+
+# limit to just liver cancer samples
+annotation_data = read.csv("C:/Users/splaisie/Dropbox (ASU)/BackupASU/GenomicsCURE/CCLE_Fall2023/TCGA_differentialExpression/inferred_sex_chromosome_complement_age.csv", header = TRUE, check.names = FALSE)
+liver_samples = annotation_data$cases[annotation_data$Cancer.Type == "LIHC"]
+
+# female, XX, XIST expr (XaXi)
+female_XX_XISTexpr_lines = na.omit(TCGA_ploidy_info$case_id[TCGA_ploidy_info$X_status == "WT" & TCGA_ploidy_info$XIST_expression_category == "expressed" & TCGA_ploidy_info$gender == "FEMALE"])
+
+# female, XX, no XIST (XaXa)
+female_XX_noXIST_lines = na.omit(TCGA_ploidy_info$case_id[TCGA_ploidy_info$X_status == "WT" & TCGA_ploidy_info$XIST_expression_category == "not expressed" & TCGA_ploidy_info$gender == "FEMALE"])
+
+# female, X0 (X)
+female_X0_lines = na.omit(TCGA_ploidy_info$case_id[TCGA_ploidy_info$X_status == "LOX" & TCGA_ploidy_info$XIST_expression_category == "not expressed" & TCGA_ploidy_info$gender == "FEMALE"])
+
+female_lines = c(female_XX_XISTexpr_lines,female_XX_noXIST_lines, female_X0_lines)
+
+# male, XY, chrY genes expr
+male_XY_chrYexpr_lines = na.omit(TCGA_ploidy_info$case_id[TCGA_ploidy_info$Y_status == "WT" & TCGA_ploidy_info$conservative_calls == "XY" & TCGA_ploidy_info$gender == "MALE"])
+
+# male X (LOY), no chrY gene expr
+male_LOY_lines = na.omit(TCGA_ploidy_info$case_id[TCGA_ploidy_info$Y_status == "LOY" & TCGA_ploidy_info$conservative_calls == "X" & TCGA_ploidy_info$gender == "MALE"])
+
+male_lines = c(male_XY_chrYexpr_lines,male_LOY_lines)
+
+```
+
+## Survival analysis with LIHC data
+
+```{r survival, eval=FALSE}
+
+# Step 1: Download TCGA-LIHC clinical data
+#project_codes = c("TCGA-UCS","TCGA-SARC","TCGA-GBM", "TCGA-HNSC","TCGA-PAAD","TCGA-COAD","TCGA-LGG","TCGA-THCA","TCGA-BRCA","TCGA-THYM","TCGA-PCPG","TCGA-KIRP","TCGA-CESC","TCGA-UCEC","TCGA-LIHC","TCGA-ACC","TCGA-UVM", "TCGA-READ","TCGA-DLBC","TCGA-LUAD","TCGA-LUSC","TCGA-SARC","TCGA-OV","TCGA-HNSC","TCGA-KIRC","TCGA-KICH", "TCGA-PRAD")
+
+#project_codes = c("TCGA-BRCA","TCGA-THYM","TCGA-PCPG","TCGA-KIRP","TCGA-CESC","TCGA-UCEC","TCGA-LIHC","TCGA-ACC","TCGA-UVM", "TCGA-READ","TCGA-DLBC","TCGA-LUAD","TCGA-LUSC","TCGA-SARC","TCGA-OV","TCGA-HNSC","TCGA-KIRC","TCGA-KICH")
+
+#project_codes = c("TCGA-THYM","TCGA-PCPG","TCGA-KIRP","TCGA-CESC","TCGA-UCEC","TCGA-LIHC","TCGA-ACC","TCGA-UVM", "TCGA-READ","TCGA-DLBC","TCGA-LUAD","TCGA-LUSC","TCGA-SARC","TCGA-OV","TCGA-HNSC","TCGA-KIRC","TCGA-KICH")
+
+#project_codes = c("TCGA-PRAD","TCGA-BRCA")
+
+project_codes = c("TCGA-BRCA")
+
+cancer_types = levels(as.factor(annotation_data$Cancer.Type))
+cancer_types = paste0("TCGA-",cancer_types)
+project_codes = setdiff(cancer_types, project_codes)
+
+#project_codes = unique(project_codes)
+
+for (project_code in project_codes) {
+  query <- GDCquery(project = project_code, data.category = "Clinical", file.type = "xml")
+  
+  #GDCdownload(query)
+  #GDCdownload(query, method = "client", files.per.chunk = 100)
+  clinical <- GDCprepare_clinic(query, clinical.info = "patient")
+  
+  # Step 2: Add SCC
+  
+  clinical$SCC = ifelse(clinical$bcr_patient_barcode %in% female_X0_lines,"FEM_X0",ifelse(clinical$bcr_patient_barcode %in% female_XX_noXIST_lines,"FEM_XaXa",ifelse(clinical$bcr_patient_barcode %in% female_XX_XISTexpr_lines,"FEM_XaXi",ifelse(clinical$bcr_patient_barcode %in% male_LOY_lines,"MALE_X0",ifelse(clinical$bcr_patient_barcode %in% male_XY_chrYexpr_lines,"MALE_XY","unknown")))))
+  
+  #remove unknown SCC
+  clinical = clinical[clinical$SCC != "unknown",]
+  
+  # Step 3: Prepare survival variables
+  clinical <- clinical %>%
+    dplyr::mutate(
+      time = ifelse(!is.na(days_to_death), days_to_death, days_to_last_followup),
+      event = ifelse(vital_status == "Dead", 1, 0)
+    ) %>%
+    dplyr::filter(!is.na(time) & !is.na(SCC))
+  
+  # Step 4: Fit survival curve using your custom group
+  fit <- survfit(Surv(time, event) ~ SCC, data = clinical)
+  
+  # Step 5: Plot Kaplan-Meier curve
+  all_SCC_plot = ggsurvplot(fit, data = clinical, pval = TRUE, risk.table = FALSE, title = paste0("Survival by SCC in ", project_code))
+  #ggsave(all_SCC_plot$plot, filename =  paste0(data_directory,"survival/allSCC_",project_code,".pdf"))
+  
+  # Filter to only female patients
+  # subset_clinical <- clinical %>%
+  #    dplyr::filter(SCC %in% c("FEM_XaXi", "FEM_X0", "FEM_XaXa"))
+  # 
+  # if(nrow(subset_clinical) > 2 & length(levels(as.factor(subset_clinical$SCC))) >= 2) {
+  #   # Survival analysis
+  #   fit <- survfit(Surv(time, event) ~ SCC, data = subset_clinical)
+  #   
+  #   # Plot
+  #   females_only_plot = ggsurvplot(fit, data = subset_clinical, pval = TRUE, risk.table = FALSE, title = paste0("Survival by SCC in ", project_code, "females"))
+  #   ggsave(females_only_plot$plot, filename =  paste0(data_directory,"survival/allFEM_",project_code,".pdf"))
+  # }
+  
+  # Filter to only XaXi and X0 female patients
+  subset_clinical <- clinical %>%
+     dplyr::filter(SCC %in% c("FEM_XaXi", "FEM_X0"))
+  
+  if(nrow(subset_clinical) > 2 & length(levels(as.factor(subset_clinical$SCC))) >= 2) {
+    # Survival analysis
+    fit <- survfit(Surv(time, event) ~ SCC, data = subset_clinical)
+    
+    # Plot
+    females_only_plot = ggsurvplot(fit, data = subset_clinical, pval = TRUE, risk.table = FALSE, title = paste0("Survival by SCC in ", project_code, "females (LOX)"))
+    ggsave(females_only_plot$plot, filename =  paste0(data_directory,"survival/allFEM_noXaXa_",project_code,".pdf"))
+  }
+  
+  # Filter to only male patients
+  subset_clinical <- clinical %>%
+     dplyr::filter(SCC %in% c("MALE_XY", "MALE_X0"))
+  
+  if(nrow(subset_clinical) > 2 & length(levels(as.factor(subset_clinical$SCC))) >= 2) {
+    # Survival analysis
+  fit <- survfit(Surv(time, event) ~ SCC, data = subset_clinical)
+  
+  # Plot
+  males_only_plot = ggsurvplot(fit, data = subset_clinical, pval = TRUE, risk.table = FALSE, title = paste0("Survival by SCC in ", project_code, "males"))
+  ggsave(males_only_plot$plot, filename =  paste0(data_directory,"survival/allMALE_",project_code,".pdf"))
+  }
+  
+  # Filter to only typical vs loss
+  subset_clinical <- clinical %>%
+     dplyr::filter(SCC %in% c("FEM_XaXi", "FEM_X0", "MALE_XY", "MALE_X0"))
+  
+  subset_clinical$SCC[subset_clinical$SCC == "FEM_XaXi"] = "typical"
+  subset_clinical$SCC[subset_clinical$SCC == "MALE_XY"] = "typical"
+  subset_clinical$SCC[subset_clinical$SCC == "FEM_X0"] = "loss"
+  subset_clinical$SCC[subset_clinical$SCC == "MALE_X0"] = "loss"
+  
+  if(nrow(subset_clinical) > 2 & length(levels(as.factor(subset_clinical$SCC))) >= 2) {
+    # Survival analysis
+  fit <- survfit(Surv(time, event) ~ SCC, data = subset_clinical)
+  
+  # Plot
+  males_only_plot = ggsurvplot(fit, data = subset_clinical, pval = TRUE, risk.table = FALSE, title = paste0("Survival by SCC in ", project_code, "males"))
+  ggsave(males_only_plot$plot, filename =  paste0(data_directory,"survival/typvloss_",project_code,".pdf"))
+  }
+}
+```
+
+# all pairwise 
+
+```{r eval=FALSE}
+
+cancer_types = levels(as.factor(annotation_data$Cancer.Type))
+cancer_types = paste0("TCGA-",cancer_types)
+
+project_codes = cancer_types[cancer_types != "TCGA-BRCA"] # since that data set is being weird
+
+for (project_code in project_codes) {
+  print(project_code)
+  
+  query <- GDCquery(project = project_code, data.category = "Clinical", file.type = "xml")
+  
+  clinical <- GDCprepare_clinic(query, clinical.info = "patient")
+  
+  # Step 2: Add SCC
+  
+  clinical$SCC = ifelse(clinical$bcr_patient_barcode %in% female_X0_lines,"FEM_X0",ifelse(clinical$bcr_patient_barcode %in% female_XX_noXIST_lines,"FEM_XaXa",ifelse(clinical$bcr_patient_barcode %in% female_XX_XISTexpr_lines,"FEM_XaXi",ifelse(clinical$bcr_patient_barcode %in% male_LOY_lines,"MALE_X0",ifelse(clinical$bcr_patient_barcode %in% male_XY_chrYexpr_lines,"MALE_XY","unknown")))))
+  
+  #remove unknown SCC
+  clinical = clinical[clinical$SCC != "unknown",]
+  
+  # Step 3: Prepare survival variables
+  clinical <- clinical %>%
+    dplyr::mutate(
+      time = ifelse(!is.na(days_to_death), days_to_death, days_to_last_followup),
+      event = ifelse(vital_status == "Dead", 1, 0)
+    ) %>%
+    dplyr::filter(!is.na(time) & !is.na(SCC))
+  
+  # Step 4: Fit survival curve using your custom group
+  pairs = pairwise_survdiff(Surv(time, event) ~ SCC, data = clinical)
+  pval_matrix = pairs$p.value
+  pval_df = as.data.frame(as.table(pval_matrix))  # Converts to long-format table
+  colnames(pval_df) = c("Group1","Group2",paste0(project_code,"_p-value"))
+  write.csv(pval_df, file = paste0("survival/pairwisesurv_",project_code,".csv"), row.names = FALSE)
+}
+
+```
+# load Cancer Immune Landscape clinical data
+
+```{r}
+
+pancancer_clinical = read.csv(paste0(data_directory,"phenotypes_panCancer_immuneLandscape_clinical.csv"))
+
+# Add SCC
+pancancer_clinical$SCC = ifelse(pancancer_clinical$bcr_patient_barcode %in% female_X0_lines,"FEM_X0",ifelse(pancancer_clinical$bcr_patient_barcode %in% female_XX_noXIST_lines,"FEM_XaXa",ifelse(pancancer_clinical$bcr_patient_barcode %in% female_XX_XISTexpr_lines,"FEM_XaXi",ifelse(pancancer_clinical$bcr_patient_barcode %in% male_LOY_lines,"MALE_X0",ifelse(pancancer_clinical$bcr_patient_barcode %in% male_XY_chrYexpr_lines,"MALE_XY","unknown")))))
+pancancer_clinical = pancancer_clinical[pancancer_clinical$SCC != "unknown",]
+
+# Create the survival object
+surv_obj <- Surv(time = pancancer_clinical$OS.time, event = pancancer_clinical$OS)
+
+# Fit survival model by group
+fit <- survfit(surv_obj ~ pancancer_clinical$SCC)
+
+# Plot
+all_data_survival = ggsurvplot(fit, data = pancancer_clinical, pval = TRUE, palette = c("steelblue1", "darkcyan", "blue", "goldenrod3", "sienna"))
+
+ggsave(all_data_survival$plot, filename = paste0(data_directory, "all_data_survival_pancancer.pdf"), height = 4, width = 6)
+
+survival_features = summary(fit)
+survival_features = data.frame(survival_features$table)
+survival_features$'median_days' = survival_features$median / 365.25
+write.csv(survival_features, file = paste0(data_directory,"all_data_survival_pancancer_features.csv"))
+
+cox_fit = coxph(surv_obj ~ pancancer_clinical$SCC)
+hr = exp(coef(cox_fit))
+ci = exp(confint(cox_fit))
+write.csv(hr, file = paste0(data_directory,"all_data_survival_pancancer_cox_HR.csv"))
+write.csv(ci, file = paste0(data_directory,"all_data_survival_pancancer_cox_CI.csv"))
+
+
+# try with just patient sex
+
+fit <- survfit(surv_obj ~ pancancer_clinical$gender)
+ggsurvplot(fit, data = pancancer_clinical, pval = TRUE)
+
+# pairwise between groups
+
+pairs = pairwise_survdiff(Surv(time = OS.time, event = OS) ~ SCC, data = pancancer_clinical)
+  
+pval_matrix = pairs$p.value
+pval_df = as.data.frame(as.table(pval_matrix))  # Converts to long-format table
+colnames(pval_df) = c("Group1","Group2",paste0(project_code,"_p-value"))
+write.csv(pval_df, file = paste0("pairwisesurv_pancancer.csv"), row.names = FALSE)
+
+# try within just female patients
+
+female_clinical = pancancer_clinical[pancancer_clinical$gender == "FEMALE",]
+female_clinical$SCC = ifelse(female_clinical$bcr_patient_barcode %in% female_X0_lines,"FEM_X0",ifelse(female_clinical$bcr_patient_barcode %in% female_XX_noXIST_lines,"FEM_XaXa",ifelse(female_clinical$bcr_patient_barcode %in% female_XX_XISTexpr_lines,"FEM_XaXi",ifelse(female_clinical$bcr_patient_barcode %in% male_LOY_lines,"MALE_X0",ifelse(female_clinical$bcr_patient_barcode %in% male_XY_chrYexpr_lines,"MALE_XY","unknown")))))
+female_clinical = female_clinical[female_clinical$SCC != "unknown",]
+
+surv_obj <- Surv(time = female_clinical$OS.time, event = female_clinical$OS)
+fit <- survfit(surv_obj ~ female_clinical$SCC)
+female_data_survival = ggsurvplot(fit, data = female_clinical, pval = TRUE,palette = c("steelblue1", "darkcyan", "blue"))
+ggsave(female_data_survival$plot, filename = paste0(data_directory, "female_data_survival_pancancer.pdf"), height = 4, width = 8)
+
+# try within just male patients
+
+male_clinical = pancancer_clinical[pancancer_clinical$gender == "MALE",]
+male_clinical$SCC = ifelse(male_clinical$bcr_patient_barcode %in% female_X0_lines,"FEM_X0",ifelse(male_clinical$bcr_patient_barcode %in% female_XX_noXIST_lines,"FEM_XaXa",ifelse(male_clinical$bcr_patient_barcode %in% female_XX_XISTexpr_lines,"FEM_XaXi",ifelse(male_clinical$bcr_patient_barcode %in% male_LOY_lines,"MALE_X0",ifelse(male_clinical$bcr_patient_barcode %in% male_XY_chrYexpr_lines,"MALE_XY","unknown")))))
+male_clinical = male_clinical[male_clinical$SCC != "unknown",]
+
+surv_obj <- Surv(time = male_clinical$OS.time, event = male_clinical$OS)
+fit <- survfit(surv_obj ~ male_clinical$SCC)
+male_data_survival = ggsurvplot(fit, data = male_clinical, pval = TRUE, palette = c("goldenrod3", "sienna"))
+ggsave(male_data_survival$plot, filename = paste0(data_directory, "male_data_survival_pancancer.pdf"), height = 4, width = 8)
+
+# loop through using all cancer types
+
+cancer_types = levels(as.factor(pancancer_clinical$tumor))
+
+for (cancer_type in cancer_types) {
+  pancancer_clinical_tumortype = pancancer_clinical[pancancer_clinical$tumor == cancer_type,]
+  
+  surv_obj <- Surv(time = pancancer_clinical_tumortype$OS.time, event = pancancer_clinical_tumortype$OS)
+  fit <- survfit(surv_obj ~ pancancer_clinical_tumortype$SCC)
+  tumortype_survival = ggsurvplot(fit, data = pancancer_clinical_tumortype, pval = TRUE)
+
+  ggsave(tumortype_survival$plot, filename = paste0(data_directory, "survival/survival_pancancer_",cancer_type,".pdf"), height = 4, width = 8)
+
+}
+```
+
+# List all the packages used for future reference
+
+It is always a good practice to list out all the packages you are using in your report.  It helps ensure reproducibility by you and others that use your code, and thus we report the packages and versions in the Methods section of the manuscript when you publish your work.
+
+```{r SessionInfo}
+sessionInfo()
+```

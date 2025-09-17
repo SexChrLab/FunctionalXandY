@@ -1,0 +1,167 @@
+---
+title: "TCGA Gene Expression"
+author: "Seema Plaisier"
+date: "`r format(Sys.time(), '%m/%d/%y')`"
+output:
+  pdf_document: default
+  html_document:
+    df_print: paged
+  word_document: default
+---
+
+## Overview
+Differential expression of TCGA data sets. 
+
+## Import necessary R packages
+
+
+
+```{r libraries}
+
+# load packages for use
+library(ggplot2)
+library(UpSetR)
+
+```
+
+## Set options for printing reports
+
+```{r Printoptions}
+
+# this will make sure that the code doesn't run off the page when printing a report
+knitr::opts_chunk$set(tidy.opts = list(width.cutoff = 50), tidy = TRUE)
+```
+
+
+## Set working directory and data directories
+
+
+``` {r SetDirectory}
+
+# store the path to the working directory in a variable 
+# make sure to include the / at the end of the directory path if you plan to put it together with the path to files inside the directory
+
+data_directory = "C:/Users/plaisiersb/OneDrive - National Institutes of Health/Documents/Projects/SCC_Cancer/"
+
+```
+
+# Make gene lists
+
+```{r ReadData}
+
+# use ploidy / inferred sex chromosome file to get gene lists of interest
+
+TCGA_ploidy_info = read.csv("C:/Users/plaisiersb/OneDrive - National Institutes of Health/Documents/Projects/SCC_Cancer/TCGA_ploidy_expression.csv")
+cancer_types = levels(as.factor(TCGA_ploidy_info$Cancer.Type))
+
+# all tissues combined
+
+# female, XX, XIST expr (X0)
+female_XX_XISTexpr_lines = na.omit(TCGA_ploidy_info$cases[TCGA_ploidy_info$X_status == "WT" & TCGA_ploidy_info$XIST_expression_category == "expressed" & TCGA_ploidy_info$gender == "FEMALE"])
+
+# female, XX, no XIST (XaXa)
+female_XX_noXIST_lines = na.omit(TCGA_ploidy_info$cases[TCGA_ploidy_info$X_status == "WT" & TCGA_ploidy_info$XIST_expression_category == "not expressed" & TCGA_ploidy_info$gender == "FEMALE"])
+
+# female, X0 (X)
+female_X0_lines = na.omit(TCGA_ploidy_info$cases[TCGA_ploidy_info$X_status == "LOX" & TCGA_ploidy_info$XIST_expression_category == "not expressed" & TCGA_ploidy_info$gender == "FEMALE"])
+
+female_lines = c(female_XX_XISTexpr_lines,female_XX_noXIST_lines, female_X0_lines)
+
+# male, X0, chrY genes expr
+male_XY_chrYexpr_lines = na.omit(TCGA_ploidy_info$cases[TCGA_ploidy_info$Y_status == "WT" & TCGA_ploidy_info$conservative_calls == "XY" & TCGA_ploidy_info$gender == "MALE"])
+
+# male X (LOY), no chrY gene expr
+male_LOY_lines = na.omit(TCGA_ploidy_info$cases[TCGA_ploidy_info$Y_status == "LOY" & TCGA_ploidy_info$conservative_calls == "X" & TCGA_ploidy_info$gender == "MALE"])
+
+male_lines = c(male_XY_chrYexpr_lines,male_LOY_lines)
+
+aneuploidy_data = read.csv("C:/Users/plaisiersb/OneDrive - National Institutes of Health/Documents/Projects/SCC_Cancer/TCGA_Aneuploidy_PMID_29622463_TableS2.csv")
+
+# 'Sample' in the aneuploidy data is only the first 4 parts of the 
+#   full ID in 'cases' of TCGA_ploidy_info
+female_XaXi_lines = sapply(strsplit(female_XX_XISTexpr_lines, "-"), function(x) {
+  paste(head(x, 4), collapse = "-")
+})
+female_XaXi_lines = substr(female_XaXi_lines, 1, nchar(female_XaXi_lines) - 1)
+
+female_X0_lines = sapply(strsplit(female_X0_lines, "-"), function(x) {
+  paste(head(x, 4), collapse = "-")
+})
+female_X0_lines = substr(female_X0_lines, 1, nchar(female_X0_lines) - 1)
+
+female_XX_noXIST_lines = sapply(strsplit(female_XX_noXIST_lines, "-"), function(x) {
+  paste(head(x, 4), collapse = "-")
+})
+female_XX_noXIST_lines = substr(female_XX_noXIST_lines, 1, nchar(female_XX_noXIST_lines) - 1)
+
+male_XY_lines = sapply(strsplit(male_XY_chrYexpr_lines, "-"), function(x) {
+  paste(head(x, 4), collapse = "-")
+})
+male_XY_lines = substr(male_XY_lines, 1, nchar(male_XY_lines) - 1)
+
+male_LOY_lines = sapply(strsplit(male_LOY_lines, "-"), function(x) {
+  paste(head(x, 4), collapse = "-")
+})
+male_LOY_lines = substr(male_LOY_lines, 1, nchar(male_LOY_lines) - 1)
+
+```
+
+# Tally/intersect aneuploidy with SCC groups
+
+```{r aneuploidy}
+
+# grab aneuploidy data based on SCC groups
+female_XaXi_aneuploidy = aneuploidy_data[aneuploidy_data$Sample %in% female_XaXi_lines,]
+female_X0_aneuploidy = aneuploidy_data[aneuploidy_data$Sample %in% female_X0_lines,]
+female_XaXa_aneuploidy = aneuploidy_data[aneuploidy_data$Sample %in% female_XX_noXIST_lines,]
+
+male_XY_aneuploidy = aneuploidy_data[aneuploidy_data$Sample %in% male_XY_lines,]
+male_X0_aneuploidy = aneuploidy_data[aneuploidy_data$Sample %in% male_LOY_lines,]
+
+# make a big list of them so we can loop through them all individually
+df_list = list(female_X0 = female_X0_aneuploidy, female_XaXi = female_XaXi_aneuploidy, female_XaXa = female_XaXa_aneuploidy, male_X0 = male_X0_aneuploidy, male_XY = male_XY_aneuploidy)
+
+# For each, grab the proportion of -1, 0, 1 values for each chromosome/arm
+
+get_props = function (df, groupname) {
+  counts <- t(apply(df[14:50], 2, function(col) {
+    tab <- table(factor(col, levels = c(-1, 0, 1)))
+    as.numeric(tab) / length(col)
+  }))
+  colnames(counts) <- c("prop_neg1", "prop_0", "prop_1")
+  
+  counts = data.frame(counts)
+  counts$group = rep(groupname,nrow(counts))
+  counts$chromosome = rownames(counts)
+  rownames(counts) = NULL
+  counts
+}
+
+# Paste together the results so we have a long data frame for plotting
+result = do.call(rbind, lapply(names(df_list), function(nm) {
+  get_props(df_list[[nm]], groupname = nm)
+}))
+
+# Plot the proportion by SCC group
+ggplot(result, aes(x = group, y = prop_neg1)) + 
+  geom_bar(stat = "identity") +
+  facet_wrap(~chromosome) +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1, vjust = 1))
+ggsave("aneuploidy_loss.pdf")
+
+ggplot(result, aes(x = group, y = prop_1)) + 
+  geom_bar(stat = "identity") +
+  facet_wrap(~chromosome) +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1, vjust = 1))
+ggsave("aneuploidy_gain.pdf")
+```
+
+
+
+# List all the packages used for future reference
+
+It is always a good practice to list out all the packages you are using in your report.  It helps ensure reproducibility by you and others that use your code, and thus we report the packages and versions in the Methods section of the manuscript when you publish your work.
+
+```{r SessionInfo}
+sessionInfo()
+```
