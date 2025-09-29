@@ -10,7 +10,7 @@ This  Excel file lists samples in the three data sets that have a sex chromosome
 
 ```TCGA_*All.csv```
 
-These comma separated value (csv) files are merged differential expression tables from tissues in which various sex chromosome complement related profiles are generated.  LOX stands for loss of chromosome X in samples from female individuals.  LOY stands for loss of chromosome Y in male in samples from male individuals.  XaXa stands for X chromosome reactivation (loss of X chromosome inactivation) in samples from female individuals.
+These comma separated value (csv) files are merged differential expression tables from tissues in which various sex chromosome complement related profiles are generated.  LOX stands for loss of chromosome X in samples from female individuals.  LOY stands for loss of chromosome Y in male in samples from male individuals.  XaXa stands for X chromosome reactivation (loss of X chromosome inactivation) in samples from female individuals. 'FemaleXaXi_Male_XY' stands for the differential expression profile between female and male patient samples with typical sex chromosome complements.
 
 
 ```TCGA_*Consistent.csv```
