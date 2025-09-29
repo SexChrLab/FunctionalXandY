@@ -12,6 +12,7 @@ This Rmd shows how to take differential gene expression results across multiple 
 3. Once these genes have been selected, the genes can be written out and entered into Metascape (https://metascape.org/gp/index.html#/main/step1)
 4.  An Excel can be downloaded with the results-- the Annotation tab should be saved as a comma-separated file (csv)
 5.  This is entered as an additional input and used to create row annotations with specific fields
+6.  This also includes code to create a circos plot of all the consistent gene profiles we created (Figure 4).
 
 
 ```TCGA_co_aneuploidy.Rmd```
